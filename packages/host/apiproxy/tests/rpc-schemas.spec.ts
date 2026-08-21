@@ -142,6 +142,13 @@ describe('sessions domain schemas', () => {
     expect(sessionSummarySchema.parse({ sessionId: 's1', updatedAt: 1, running: true, blank: false, parentSessionId: 'p', cwd: '/x' }).cwd).toBe('/x')
     // blank is mandatory: a summary without it fails the parse.
     expect(() => sessionSummarySchema.parse({ sessionId: 's1', updatedAt: 1, running: false })).toThrow()
+    // Remote-source markers survive the wire parse (zod object default strips
+    // unknown keys, so the schema must name them for the client to keep them).
+    expect(sessionSummarySchema.parse({
+      sessionId: 's1', updatedAt: 1, running: false, blank: false,
+      sourceId: 'federation-hub', sourceName: 'Hub Sessions',
+      isRemote: true, isDegraded: true, readOnly: true,
+    })).toMatchObject({ sourceId: 'federation-hub', sourceName: 'Hub Sessions', isRemote: true, isDegraded: true, readOnly: true })
     const event = sessionEventSchema.parse({
       type: 'user/message',
       seq: 0,

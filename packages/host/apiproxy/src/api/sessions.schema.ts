@@ -59,6 +59,11 @@ export const sessionSummarySchema = z.object({
   cwd: z.string().optional(),
   agentPreset: z.string().optional(),
   projections: z.lazy(() => sessionProjectionsBlockSchema).optional(),
+  sourceId: z.string().optional(),
+  sourceName: z.string().optional(),
+  isRemote: z.boolean().optional(),
+  isDegraded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
 }) as unknown as z.ZodType<Wire<SessionSummary>>
 
 /** session.list request payload (cursor is a reserved seat, unimplemented in v1). */

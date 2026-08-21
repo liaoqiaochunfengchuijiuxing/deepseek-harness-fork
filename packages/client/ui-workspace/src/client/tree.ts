@@ -15,6 +15,18 @@ export const UNGROUPED_KEY = ''
 /** Display label for the ungrouped bucket row. */
 export const UNGROUPED_LABEL = 'Ungrouped'
 
+/** Group key prefix for remote-source groups (federation sessions grouped by their origin source). */
+const REMOTE_GROUP_PREFIX = 'remote:'
+
+/**
+ * Group key for one remote session source.
+ * @param sourceId - the summary's source identifier (e.g. 'federation-hub').
+ * @returns the prefixed group key.
+ */
+function remoteGroupKey(sourceId: string): string {
+  return `${REMOTE_GROUP_PREFIX}${sourceId}`
+}
+
 /** One top-level session row in a group or the flat list. */
 export interface SessionNode {
   id: SessionId
@@ -47,14 +59,16 @@ export type SessionOrderBy = 'manual' | 'updated'
 
 /** One workspace group section: header row facts + visible top-level session rows. */
 export interface GroupNode {
-  /** Group key: the workspace id or {@link UNGROUPED_KEY}. */
+  /** Group key: the workspace id, a `remote:` source key, or {@link UNGROUPED_KEY}. */
   key: string
-  /** Backing Workspace id; absent only for the ungrouped bucket. */
+  /** Backing Workspace id; absent for the ungrouped bucket and remote-source groups. */
   workspaceId: WorkspaceId | undefined
   cwd: string | undefined
-  /** Workspace creation time (epoch ms); absent only for the ungrouped bucket. */
+  /** Workspace creation time (epoch ms); absent for the ungrouped bucket and remote-source groups. */
   createdAt: number | undefined
   label: string
+  /** Present on remote-source groups: the label is the origin source's display name, not a Workspace title. */
+  remote?: true
   /** Total visible sessions in the group. */
   sessionCount: number
   expanded: boolean
@@ -98,6 +112,7 @@ interface Group {
   cwd: string | undefined
   createdAt: number | undefined
   label: string
+  remote?: true
   sessions: SessionSummary[]
 }
 
@@ -177,9 +192,12 @@ function orderedUngrouped(members: readonly SessionSummary[], stored: readonly s
 
 /**
  * Group Sessions by Host Workspace: one group per entity in stable Host
- * order, with members resolved from sessionIds in their stored order. Sessions
- * outside every Workspace trail in the browser-local Ungrouped order, which
- * falls back to recency before that order is initialized.
+ * order, with members resolved from sessionIds in their stored order.
+ * Remote-source sessions (federation reads whose cwd names a host-side
+ * directory no local Workspace registered) form one group per origin source,
+ * labeled with the source's display name. Remaining Sessions outside every
+ * Workspace trail in the browser-local Ungrouped order, which falls back to
+ * recency before that order is initialized.
  */
 function groupByWorkspace(
   list: SessionListState,
@@ -203,10 +221,24 @@ function groupByWorkspace(
       Date.parse(workspace.createdAt), workspace.title, members, 'account',
     ))
   }
-  const stray = list.ids
-    .map(id => list.byId[id])
-    .filter((s): s is SessionSummary =>
-      s !== undefined && !accounted.has(s.id) && sessionVisible(s, list.current, archived))
+  const remoteMembers = new Map<string, SessionSummary[]>()
+  const stray: SessionSummary[] = []
+  for (const id of list.ids) {
+    const summary = list.byId[id]
+    if (summary === undefined || accounted.has(id) || !sessionVisible(summary, list.current, archived)) continue
+    if (summary.isRemote === true) {
+      const key = remoteGroupKey(summary.sourceId ?? 'unknown')
+      const members = remoteMembers.get(key)
+      if (members === undefined) remoteMembers.set(key, [summary])
+      else members.push(summary)
+      continue
+    }
+    stray.push(summary)
+  }
+  for (const [key, members] of remoteMembers) {
+    const label = members.find(member => member.sourceName !== undefined)?.sourceName ?? key
+    groups.push({ ...buildGroup(key, undefined, undefined, undefined, label, members, 'recency'), remote: true })
+  }
   if (stray.length > 0) {
     groups.push(buildGroup(
       UNGROUPED_KEY,
@@ -243,6 +275,28 @@ function sessionNode(
 }
 
 /**
+ * Group key owning a session: its Workspace's id when a Workspace accounts
+ * for it, its remote source's `remote:` key when it is a remote read, and
+ * the Ungrouped bucket otherwise (including a summary that has not landed).
+ * @param list - sessions list snapshot.
+ * @param workspaces - real workspaces in stable Host order.
+ * @param sessionId - the session to locate.
+ * @returns the owning group key, or undefined when no session is selected.
+ */
+export function currentGroupKey(
+  list: SessionListState,
+  workspaces: readonly WorkspaceView[],
+  sessionId: SessionId | undefined,
+): string | undefined {
+  if (sessionId === undefined) return undefined
+  const workspace = workspaces.find(w => w.sessionIds.includes(sessionId))
+  if (workspace !== undefined) return workspace.workspaceId as string
+  const summary = list.byId[sessionId]
+  if (summary?.isRemote === true) return remoteGroupKey(summary.sourceId ?? 'unknown')
+  return UNGROUPED_KEY
+}
+
+/**
  * Derive the workspace browser groups with every session as a top-level row.
  *
  * Every group shows; sessions populate under expanded groups in the selected
@@ -265,10 +319,7 @@ export function deriveGroups(
   const archived = new Set(archivedSessionIds)
   const expandedGroups = new Set(view.expandedGroups)
   const descendants = indexSubagentDescendants(list.byId)
-  const currentGroup = list.current === undefined
-    ? undefined
-    : (workspaces.find(w => w.sessionIds.includes(list.current as SessionId))?.workspaceId as string | undefined)
-        ?? UNGROUPED_KEY
+  const currentGroup = currentGroupKey(list, workspaces, list.current)
   const groups: GroupNode[] = []
   for (const g of groupByWorkspace(list, workspaces, archived, view.ungroupedOrder)) {
     const expanded = expandedGroups.has(g.key)
@@ -278,6 +329,7 @@ export function deriveGroups(
       cwd: g.cwd,
       createdAt: g.createdAt,
       label: g.label,
+      ...(g.remote === true ? { remote: true } : {}),
       sessionCount: g.sessions.length,
       expanded,
       containsCurrent: g.key === currentGroup,

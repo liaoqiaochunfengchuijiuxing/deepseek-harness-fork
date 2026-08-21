@@ -693,6 +693,11 @@ export class SessionRuntime implements ISessions {
         ...(entry.parentSessionId !== undefined ? { parentId: entry.parentSessionId } : {}),
         ...(entry.origin !== undefined ? { origin: entry.origin } : {}),
         ...(entry.agentPreset !== undefined ? { agentPreset: entry.agentPreset } : {}),
+        ...(entry.sourceId !== undefined ? { sourceId: entry.sourceId } : {}),
+        ...(entry.sourceName !== undefined ? { sourceName: entry.sourceName } : {}),
+        ...(entry.isRemote !== undefined ? { isRemote: entry.isRemote } : {}),
+        ...(entry.isDegraded !== undefined ? { isDegraded: entry.isDegraded } : {}),
+        ...(entry.readOnly !== undefined ? { readOnly: entry.readOnly } : {}),
       }
     }
     if (current !== undefined && currentAddress !== undefined) {

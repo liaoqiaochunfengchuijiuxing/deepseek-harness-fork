@@ -20,7 +20,7 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { WorkspaceBrowserProps } from './contract/slots.ts'
 import type { SessionNode, SessionOrderBy } from './tree.ts'
-import { deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
+import { currentGroupKey, deriveFlat, deriveGroups, deriveSearchResults, UNGROUPED_KEY } from './tree.ts'
 import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './rows/Rows.tsx'
 import { FLAT_SESSION_ORDER_KEY } from './stores.ts'
 import { WorkspacePickFlow } from './WorkspacePicker.tsx'
@@ -266,10 +266,7 @@ function SessionTree({
   const previousOrderBy = useRef(orderBy)
   const nativeDragActive = drag !== null || workspaceDrag !== null
   useNativeDragAcceptance(nativeDragActive)
-  const currentGroup = current === undefined
-    ? undefined
-    : (workspaces.find(w => w.sessionIds.includes(current))?.workspaceId as string | undefined)
-      ?? UNGROUPED_KEY
+  const currentGroup = currentGroupKey(list, workspaces, current)
   useEffect(() => {
     if (current === undefined || currentGroup === undefined || Object.hasOwn(groupExpansion, currentGroup)) return
     setGroupExpanded(currentGroup, true)
@@ -280,7 +277,9 @@ function SessionTree({
   )
   const ungroupedSessionIds = useMemo(() => {
     const accounted = new Set(workspaces.flatMap(workspace => workspace.sessionIds))
-    return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id))
+    // Remote-source sessions render under their own `remote:` groups, so they
+    // stay out of the Ungrouped order account.
+    return list.ids.filter(id => list.byId[id] !== undefined && !accounted.has(id) && list.byId[id]?.isRemote !== true)
   }, [list, workspaces])
   useEffect(() => {
     if (list.phase !== 'ready') return

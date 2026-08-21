@@ -36,6 +36,11 @@ type FeedRow = {
   running?: boolean
   blank?: boolean
   agentPreset?: string
+  sourceId?: string
+  sourceName?: string
+  isRemote?: boolean
+  isDegraded?: boolean
+  readOnly?: boolean
 }
 
 async function feedList(b: Bench, rows: FeedRow[]): Promise<void> {
@@ -46,6 +51,11 @@ async function feedList(b: Bench, rows: FeedRow[]): Promise<void> {
       ...(r.parentId !== undefined ? { parentSessionId: sid(r.parentId) } : {}),
       ...(r.origin !== undefined ? { origin: r.origin } : {}),
       ...(r.agentPreset !== undefined ? { agentPreset: r.agentPreset } : {}),
+      ...(r.sourceId !== undefined ? { sourceId: r.sourceId } : {}),
+      ...(r.sourceName !== undefined ? { sourceName: r.sourceName } : {}),
+      ...(r.isRemote !== undefined ? { isRemote: r.isRemote } : {}),
+      ...(r.isDegraded !== undefined ? { isDegraded: r.isDegraded } : {}),
+      ...(r.readOnly !== undefined ? { readOnly: r.readOnly } : {}),
     })),
   }) as never)
   await b.svc.refresh()
@@ -93,6 +103,26 @@ describe('list store projection', () => {
     b.svc.handleHostEnvelope({ rpcId: 'r1' as never, payload: { type: 'host/session-added', blank: true, sessionId: sid('s2') } as never })
     await Promise.resolve()
     expect(b.svc.list.getSnapshot().ids).toContain('s2')
+  })
+
+  it('projects remote-source markers onto list rows for sidebar grouping', async () => {
+    const b = bench()
+    await feedList(b, [
+      { id: 'local', cwd: '/proj' },
+      {
+        id: 'hub', cwd: '/root/hub', isRemote: true, isDegraded: true, readOnly: true,
+        sourceId: 'federation-hub', sourceName: 'Hub Sessions',
+      },
+    ])
+    const state = b.svc.list.getSnapshot()
+    expect(state.byId[sid('local')]).not.toHaveProperty('sourceId')
+    expect(state.byId[sid('hub')]).toMatchObject({
+      sourceId: 'federation-hub',
+      sourceName: 'Hub Sessions',
+      isRemote: true,
+      isDegraded: true,
+      readOnly: true,
+    })
   })
 })
 

@@ -55,6 +55,32 @@ describe('deriveGroups', () => {
     expect(groups[1]!.sessions.map(session => session.id)).toEqual([sid('loose')])
   })
 
+  it('groups remote-source sessions per origin source ahead of Ungrouped', () => {
+    const hubA = { ...summary('hub-a', 5, '/root/hub'), isRemote: true, sourceId: 'federation-hub', sourceName: 'Hub Sessions' }
+    const hubB = { ...summary('hub-b', 8, '/root/hub'), isRemote: true, sourceId: 'federation-hub', sourceName: 'Hub Sessions' }
+    const local = summary('loose', 3, '/other')
+    const sessions = list(hubA, hubB, local)
+    const groups = deriveGroups(sessions, [], noArchive, view(['remote:federation-hub', UNGROUPED_KEY]))
+    expect(groups.map(group => group.key)).toEqual(['remote:federation-hub', UNGROUPED_KEY])
+    const remoteGroup = groups[0]!
+    expect(remoteGroup.label).toBe('Hub Sessions')
+    expect(remoteGroup.remote).toBe(true)
+    expect(remoteGroup.workspaceId).toBeUndefined()
+    // Recency order inside the remote group; the ungrouped bucket keeps locals only.
+    expect(remoteGroup.sessions.map(session => session.id)).toEqual([sid('hub-b'), sid('hub-a')])
+    expect(groups[1]!.sessions.map(session => session.id)).toEqual([sid('loose')])
+  })
+
+  it('falls back to the source id label when the remote source has no display name', () => {
+    const unnamed = { ...summary('unnamed', 5), isRemote: true, sourceId: 'pod-x' }
+    const noSource = { ...summary('no-source', 6), isRemote: true }
+    // Group order follows first-seen list order.
+    const groups = deriveGroups(list(unnamed, noSource), [], noArchive, view(['remote:pod-x', 'remote:unknown']))
+    expect(groups.map(group => group.key)).toEqual(['remote:pod-x', 'remote:unknown'])
+    expect(groups[0]!.label).toBe('remote:pod-x')
+    expect(groups[1]!.label).toBe('remote:unknown')
+  })
+
   it('applies stored Ungrouped order and appends new loose Sessions by recency', () => {
     const sessions = list(summary('one', 3), summary('two', 2), summary('new', 4))
     const groups = deriveGroups(
@@ -202,6 +228,13 @@ describe('deriveGroups', () => {
     expect(ownedGroups.find(group => group.key === 'project')!.containsCurrent).toBe(true)
     const looseGroups = deriveGroups({ ...list(owned, loose), current: loose.id }, [ws], noArchive, view())
     expect(looseGroups.find(group => group.key === UNGROUPED_KEY)!.containsCurrent).toBe(true)
+  })
+
+  it('marks the remote-source group containing the selected remote session', () => {
+    const remote = { ...summary('remote', 4), isRemote: true, sourceId: 'federation-hub', sourceName: 'Hub Sessions' }
+    const groups = deriveGroups({ ...list(remote), current: remote.id }, [], noArchive, view())
+    expect(groups.find(group => group.key === 'remote:federation-hub')!.containsCurrent).toBe(true)
+    expect(groups.find(group => group.key === UNGROUPED_KEY)).toBeUndefined()
   })
 })
 

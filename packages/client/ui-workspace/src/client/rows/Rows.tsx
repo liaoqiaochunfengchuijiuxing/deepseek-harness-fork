@@ -123,7 +123,8 @@ export function ProjectRowItem({ group, onToggle, onCreate, actions, drag, home,
 }) {
   const row = group
   // The ungrouped bucket has no workspace title: its label is dictionary copy.
-  const label = row.workspaceId === undefined ? t('group.ungrouped') : row.label
+  // Remote-source groups carry the origin source's display name.
+  const label = row.workspaceId === undefined && row.remote !== true ? t('group.ungrouped') : row.label
   const active = group.expanded && group.containsCurrent
   const [menuOpen, setMenuOpen] = useState(false)
   const workspaceMenuItems = [
