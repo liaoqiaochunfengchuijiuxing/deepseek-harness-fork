@@ -547,6 +547,19 @@ rpcCapability( request: Omit<CapabilityRequestPayload, 'type'>, onStream?: (chun
  * @param requestId - request identifier.
  */
 cancelCapabilityRpc(requestId: string): void
+
+/**
+ * Check if a direct P2P connection to target pod is currently active.
+ * @param podId - target pod identifier.
+ * @returns true if directly connected.
+ */
+isDirectConnected(podId: string): boolean
+
+/**
+ * Get known direct peer endpoints.
+ * @returns Map of podId -> direct WebSocket endpoint.
+ */
+getPeerDirectEndpoints(): Map<string, string>
 ```
 
 Types: [ContentBlock](llm-streaming.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionId](core.md)

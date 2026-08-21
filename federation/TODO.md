@@ -44,7 +44,7 @@
 
 - [x] T5.1 hub 中继 pod↔pod
 - [x] T5.2 capability-server 粒度（remote fs/subprocess）
-- [ ] T5.3 直连优化 — **下一个任务**；按 [HANDOFF.md](HANDOFF.md) 开工
+- [x] T5.3 直连优化（overlay 网络下跳过 hub 中继）
 
 ## 完成定义（里程碑级）
 
@@ -52,3 +52,4 @@
 - **M2**：pod 本地会话列表含远端会话（来源徽标）；打开用本地渲染器；未知节点降级 generic。
 - **M3**：pod 发言到达远端 inbox；审批出现在指挥 pod；任何路径无静默自动批准。
 - **M4**：fork-to-local 后 derived messages 一致；租约被活节点持有时 resume 以明确理由失败；无凭证跨节点（负向测试）。
+- **M5**：hub 中继 pod↔pod 委派与 capability 远程执行；直连 P2P 优化传输（直连不可达时自动回退 hub 中继）。

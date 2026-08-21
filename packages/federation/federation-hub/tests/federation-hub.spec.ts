@@ -1445,6 +1445,148 @@ describe('session persist and leases', () => {
     })
   })
 
+  it('relays a capability request, streaming chunks, and result between pods', async () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', { directEndpoint: 'ws://127.0.0.1:1111' }, 'command', a.socket)
+    service.registerPod('pod-b', 'B', { directEndpoint: 'ws://127.0.0.1:2222' }, 'command', b.socket)
+
+    // Origin pod-a sends capability/request targeting pod-b
+    service.handlePodMessage('pod-a', {
+      type: 'capability/request',
+      requestId: 'cap-req-1',
+      seam: 'fs',
+      method: 'readText',
+      args: { target: { path: '/file.txt' } },
+      targetPodId: 'pod-b',
+    })
+
+    // Assert forwarded to pod-b
+    expect(JSON.parse(String(b.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/request',
+      requestId: 'cap-req-1',
+      seam: 'fs',
+      method: 'readText',
+    })
+
+    // Target pod-b emits streaming chunk
+    service.handlePodMessage('pod-b', {
+      type: 'capability/stream',
+      requestId: 'cap-req-1',
+      seq: 0,
+      chunk: 'chunk-1',
+      done: false,
+    })
+
+    // Assert forwarded to pod-a
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/stream',
+      requestId: 'cap-req-1',
+      chunk: 'chunk-1',
+    })
+
+    // Target pod-b sends final capability/result
+    service.handlePodMessage('pod-b', {
+      type: 'capability/result',
+      requestId: 'cap-req-1',
+      ok: true,
+      value: 'file content',
+    })
+
+    // Assert forwarded to pod-a
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/result',
+      requestId: 'cap-req-1',
+      ok: true,
+      value: 'file content',
+    })
+  })
+
+  it('handles capability request to offline or missing target pod', () => {
+    const a = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+
+    // Unspecified target pod id
+    service.handlePodMessage('pod-a', {
+      type: 'capability/request',
+      requestId: 'cap-no-target',
+      seam: 'fs',
+      method: 'stat',
+      args: {},
+    })
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/result',
+      requestId: 'cap-no-target',
+      ok: false,
+      error: { code: 'INVALID_REQUEST' },
+    })
+
+    // Offline target pod
+    service.handlePodMessage('pod-a', {
+      type: 'capability/request',
+      requestId: 'cap-target-offline',
+      seam: 'fs',
+      method: 'stat',
+      args: {},
+      targetPodId: 'pod-missing',
+    })
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/result',
+      requestId: 'cap-target-offline',
+      ok: false,
+      error: { code: 'TARGET_OFFLINE' },
+    })
+  })
+
+  it('relays capability cancel from origin pod to target pod', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+
+    service.handlePodMessage('pod-a', {
+      type: 'capability/request',
+      requestId: 'cap-cancel-1',
+      seam: 'fs',
+      method: 'readText',
+      args: {},
+      targetPodId: 'pod-b',
+    })
+
+    service.handlePodMessage('pod-a', {
+      type: 'capability/cancel',
+      requestId: 'cap-cancel-1',
+    })
+
+    expect(JSON.parse(String(b.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'capability/cancel',
+      requestId: 'cap-cancel-1',
+    })
+  })
+
+  it('broadcasts peer/update on pod registration and disconnection', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', { directEndpoint: 'ws://127.0.0.1:1111' }, 'command', a.socket)
+
+    // When pod-b registers, pod-a receives peer/update (online)
+    service.registerPod('pod-b', 'B', { directEndpoint: 'ws://127.0.0.1:2222' }, 'command', b.socket)
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'peer/update',
+      podId: 'pod-b',
+      status: 'online',
+      directEndpoint: 'ws://127.0.0.1:2222',
+    })
+
+    // When pod-b goes offline, pod-a receives peer/update (offline)
+    service.setPodStatus('pod-b', 'offline')
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'peer/update',
+      podId: 'pod-b',
+      status: 'offline',
+    })
+  })
+
   it('ignores an unaddressed start and an abort for an unknown run', () => {
     const a = createFakeSocket()
     const b = createFakeSocket()

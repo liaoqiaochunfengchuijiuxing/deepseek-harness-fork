@@ -42,6 +42,11 @@ export const Config: z<Config> = z.object({
   sandboxModes: z.array(z.string()).description('Supported sandbox execution modes'),
   role: z.union([z.const('read'), z.const('command'), z.const('manage'), z.const('takeover')]).default('command').description('Declared role for this pod'),
   requestTimeoutMs: z.natural().default(10000).description('Bound (ms) on session send, persist, and lease round-trips'),
+  directPort: z.natural().description('Direct peer server port to listen for incoming direct P2P connections on overlay/LAN'),
+  directHost: z.string().default('0.0.0.0').description('Direct peer server host to bind on'),
+  directEndpoint: z.string().description('Advertised direct WebSocket endpoint for other pods to connect to'),
+  enableDirectTransport: z.boolean().default(true).description('Whether direct P2P transport optimization is enabled'),
+  peerDirectEndpoints: z.dict(z.string()).description('Static direct endpoints for known peers'),
 })
 
 /**

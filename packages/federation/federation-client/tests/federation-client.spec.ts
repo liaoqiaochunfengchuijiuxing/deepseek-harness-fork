@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WebSocketServer, WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   FederationPodClient,
   isApprovalOutcome,
@@ -761,6 +762,98 @@ describe('dsh-federation-client', () => {
           && 'error' in m)).toBe(true)
       })
       bad.dispose()
+    })
+
+    it('FederationClientService delegates all methods to client', async () => {
+      const client = await connectedClient()
+      const { FederationClientService } = await import('../src/service.ts')
+      const service = new FederationClientService(ctx, client)
+
+      expect(service.getStatus()).toBe('connected')
+      expect(service.getPodId()).toBe('pod-interact')
+      expect(service.getActiveTaskCount()).toBe(0)
+      expect(service.isDirectConnected('pod-xyz')).toBe(false)
+      expect(service.getPeerDirectEndpoints()).toEqual(new Map())
+
+      // Test delegation of sendToSession, persistSession, leaseSession, rpcCapability, cancelCapabilityRpc
+      void service.sendToSession(SessionId('sess-1'), [], 'msg-1')
+      void service.persistSession(SessionId('sess-1'), [])
+      void service.leaseSession('session/lease-acquire', SessionId('sess-1'))
+      void service.rpcCapability({ requestId: 'rpc-1', seam: 'fs', method: 'resolve', args: {} })
+      service.cancelCapabilityRpc('rpc-1')
+
+      client.dispose()
+    })
+
+    it('applies federation-client plugin and registers commands', async () => {
+      const { apply } = await import('../src/index.ts')
+      const pluginCtx = new Context()
+      const commandsRegistered: string[] = []
+      pluginCtx.provide('commands')
+      pluginCtx.set('commands', {
+        register: (spec: { name: string }) => {
+          commandsRegistered.push(spec.name)
+          return () => undefined
+        },
+      } as never)
+
+      apply(pluginCtx, {
+        endpoint: `ws://127.0.0.1:${serverPort}`,
+        podId: 'applied-pod',
+        name: 'Applied Pod',
+      })
+
+      expect(commandsRegistered).toContain('remote_send')
+      expect(commandsRegistered).toContain('fork_to_local')
+      expect(commandsRegistered).toContain('push_to_hub')
+
+      await pluginCtx.fiber.dispose()
+    })
+
+    it('handles capability result failures, streams, and missing services', async () => {
+      const client = await connectedClient()
+
+      // 1. Missing fs service when capability/request arrives
+      clientSocket!.send(JSON.stringify({
+        type: 'capability/request',
+        requestId: 'cap-fail-fs',
+        seam: 'fs',
+        method: 'readText',
+        args: {},
+      }))
+
+      await vi.waitFor(() => {
+        const failMsg = serverMessages.find(m => m.type === 'capability/result' && m.requestId === 'cap-fail-fs')
+        expect(failMsg).toBeDefined()
+        if (failMsg && failMsg.type === 'capability/result') {
+          expect(failMsg.ok).toBe(false)
+        }
+      })
+
+      // 2. Missing subprocess service when capability/request arrives
+      clientSocket!.send(JSON.stringify({
+        type: 'capability/request',
+        requestId: 'cap-fail-proc',
+        seam: 'subprocess',
+        method: 'spawn',
+        args: {},
+      }))
+
+      await vi.waitFor(() => {
+        const failMsg = serverMessages.find(m => m.type === 'capability/result' && m.requestId === 'cap-fail-proc')
+        expect(failMsg).toBeDefined()
+        if (failMsg && failMsg.type === 'capability/result') {
+          expect(failMsg.ok).toBe(false)
+        }
+      })
+
+      // 3. Cancel active capability task
+      clientSocket!.send(JSON.stringify({
+        type: 'capability/cancel',
+        requestId: 'cap-fail-fs',
+      }))
+
+      client.dispose()
     })
   })
 })

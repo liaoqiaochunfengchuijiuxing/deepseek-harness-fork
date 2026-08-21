@@ -88,13 +88,13 @@ Workspace files are not carried by session sync. Work spans nodes through a shar
 
 ## Phasing
 
-v0 through v3 are in the tree; v4 peer relay is in the tree, and remote fs/subprocess plus direct transport remain.
+v0 through v4 are fully implemented in the tree:
 
 - v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser.
 - v1: read-level federation session source — native listing, search, live rendering of remote sessions on a pod, with source badges and generic-card fallback for unknown node kinds.
 - v2: command level — `/remote_send`, approval/question routing to the commanding pod, in-flight disconnect fail-closed, and idempotent resend after reconnect.
 - v3: manage and takeover — fork-to-local, lease handoff, bidirectional roaming.
-- v4: peer relay, optional capability-server granularity (remote `ctx.fs`/`ctx.subprocess` providers, E2B-shaped), direct pod-to-pod transport.
+- v4: peer relay, capability-server granularity (remote `ctx.fs`/`ctx.subprocess` providers, E2B-shaped), and direct P2P transport optimization with automatic hub relay fallback.
 
 ## Alternatives considered
 
@@ -104,7 +104,7 @@ v0 through v3 are in the tree; v4 peer relay is in the tree, and remote fs/subpr
 
 **Gateway proxying the entire Web GUI.** Rejected: the browser bundle is a per-host plugin tree (`ctx.clientModules`, slots, HMR); proxying it means federating frontend composition. Native rendering from projections with local renderers avoids remote code delivery entirely.
 
-**A unified cross-instance tool registry.** Rejected: syncing every node's tools into each request's tool view bloats prompts and invalidates KV caches from the first changed schema token. Delegation through one stable tool (the remote subagent) keeps each model's view local.
+**Unified cross-instance tool registry.** Rejected: syncing every node's tools into each request's tool view bloats prompts and invalidates KV caches from the first changed schema token. Delegation through one stable tool (the remote subagent) keeps each model's view local.
 
 **A curated handoff-context format.** Rejected: the session log already is the complete portable work state; summaries lose fidelity and drift. Handoff carries an envelope (metadata, versions) plus the raw log suffix.
 
@@ -114,7 +114,7 @@ v0 through v3 are in the tree; v4 peer relay is in the tree, and remote fs/subpr
 
 ## Consequences
 
-v0, v1, v2, and v3 are in the tree:
+v0, v1, v2, v3, and v4 are in the tree:
 
 - The hub registry lists pods with live presence. A remote subagent run returns a structured result and usage; a mid-run disconnect maps to a stop reason. Credentials never cross nodes; delegation results carry task output and usage only.
 - Hub-owned sessions are reachable over the authenticated pod connection and the hub's own web profile. Unauthenticated upgrades are refused.
@@ -124,7 +124,7 @@ A command-capable pod delivers `session/send` into a live writer-node inbox, in 
 
 A roaming pod mounts `dsh-session-persistence-federation` as `ctx.sessionPersistence`: appends are durable on a local JSON spool first, then uploaded with monotonic seq resume. The hub applies `session/persist` to its existing JSONL or SQLite backend; leases live in memory on `FederationHubService`. `prepare` acquires the writer lease when the client is connected; a lease held by another pod fails as stale-writer; going offline releases that pod's leases. `/fork_to_local` copies a hub log into local persistence with identical `deriveMessages()`; unknown required event types and foreign format versions are refused. `/push_to_hub` uploads a local log. Persist payloads carry session id, header, and events — credentials never go on that wire. A remote subagent start may name `targetPodId`; the hub relays that run over the target pod's existing connection.
 
-Remote capability providers `dsh-fs-federation` and `dsh-subprocess-federation` delegate `ctx.fs` and `ctx.subprocess` calls to a target pod over the federation WebSocket transport. In Cloud Hub mode, a central hub executes file and bash tools on edge worker pods; in Peer mode, pods route operations across nodes. Binary file contents transfer via Base64, and process stdout/stderr stream in real time. Direct pod-to-pod transport remains out of tree.
+Remote capability providers `dsh-fs-federation` and `dsh-subprocess-federation` delegate `ctx.fs` and `ctx.subprocess` calls to a target pod over the federation WebSocket transport. In Cloud Hub mode, a central hub executes file and bash tools on edge worker pods; in Peer mode, pods route operations across nodes. Binary file contents transfer via Base64, and process stdout/stderr stream in real time. Direct P2P transport optimization allows nodes in overlay networks to bypass hub relay while transparently falling back to hub transport when unreachable.
 
 ## Testing
 
@@ -136,6 +136,7 @@ Remote capability providers `dsh-fs-federation` and `dsh-subprocess-federation` 
 - M4: `packages/federation/session-persistence-federation/tests/session-persistence-federation.spec.ts` appends locally when hub upload fails, retries the unacked prefix, and refuses unknown required events. Hub persist/lease unit tests skip stored seqs, reject stale writers, and release leases on offline. `packages/federation/federation-hub/tests/federation-e2e-m4.spec.ts` uploads a spool batch, enforces a live lease, forks with identical derived messages, and asserts persist payloads carry no credentials.
 - T5.1: `packages/federation/federation-hub/tests/federation-e2e-m5.spec.ts` addresses `pod-b` through `targetPodId` and does not execute on the first online pod. Hub unit tests relay chunk/stop/abort across a pair of connected pods.
 - T5.2: `packages/federation/federation-hub/tests/federation-e2e-t52.spec.ts` performs real remote filesystem operations (`resolve`, `writeText`, `stat`, `readText`, `streamText`, `editText`, `readBytes`, `listDir`) and subprocess operations (`resolveExecutable`, `spawn` with stdout collection, environment scrubbing) over WebSocket. Unit tests in `fs-federation` and `subprocess-federation` verify 100% per-file coverage.
+- T5.3: `packages/federation/federation-client/tests/direct-transport.spec.ts` verifies direct server listening, endpoint advertising, peer updates, and direct capability execution with fallback. `packages/federation/federation-hub/tests/federation-e2e-t53.spec.ts` runs multi-node direct P2P transport and verifies hub bypass.
 
 ## Risks
 

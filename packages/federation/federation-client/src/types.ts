@@ -24,6 +24,8 @@ export interface PodClientCapabilities {
   tools?: string[] | undefined
   /** Supported sandbox modes. */
   sandboxModes?: string[] | undefined
+  /** Direct peer WebSocket endpoint for overlay/LAN direct P2P transport. */
+  directEndpoint?: string | undefined
 }
 
 /** Token usage summary returned in delegation result. */
@@ -34,6 +36,18 @@ export interface TokenUsageSummary {
   completionTokens: number
   /** Total tokens consumed. */
   totalTokens: number
+}
+
+/** Information about a discovered peer and its direct transport endpoint. */
+export interface PeerDirectInfo {
+  /** Peer pod identifier. */
+  podId: string
+  /** Human-readable peer name. */
+  name: string
+  /** Direct WebSocket peer endpoint if declared. */
+  directEndpoint?: string | undefined
+  /** Online state. */
+  status: 'online' | 'offline'
 }
 
 /** Registration payload sent to the hub on connection. */
@@ -48,6 +62,8 @@ export interface FederationRegisterPayload {
   capabilities: PodClientCapabilities
   /** Declared permission role. */
   role: 'read' | 'command' | 'manage' | 'takeover'
+  /** Direct peer WebSocket endpoint for overlay/LAN direct transport. */
+  directEndpoint?: string | undefined
 }
 
 /** Task delegation start message received from hub. */
@@ -122,12 +138,38 @@ export interface FederationHeartbeatAckPayload {
 
 /** Registered ack received from hub. */
 export interface FederationRegisteredPayload {
-  /** Discriminant message type tag. */
+  /** Discriminant message tag. */
   type: 'federation/registered'
   /** Confirmed pod identifier. */
   podId: string
   /** Granted permission role. */
-  role: 'read' | 'command' | 'manage' | 'takeover'
+  role?: 'read' | 'command' | 'manage' | 'takeover' | undefined
+  /** Active peer pods with advertised direct endpoints. */
+  peers?: PeerDirectInfo[] | undefined
+}
+
+/** Notification of peer status or direct endpoint update received from hub. */
+export interface FederationPeerUpdatePayload {
+  /** Discriminant message tag. */
+  type: 'peer/update'
+  /** Peer pod identifier. */
+  podId: string
+  /** Human-readable peer name. */
+  name?: string | undefined
+  /** Direct WebSocket peer endpoint if declared. */
+  directEndpoint?: string | undefined
+  /** Peer status. */
+  status: 'online' | 'offline'
+}
+
+/** Direct peer connection handshake. */
+export interface PeerHandshakePayload {
+  /** Discriminant message tag. */
+  type: 'peer/handshake'
+  /** Identifier of the connecting peer pod. */
+  podId: string
+  /** Optional auth token for peer verification. */
+  token?: string | undefined
 }
 
 /** Deliver a user message into a writer-node session inbox. */
@@ -379,6 +421,8 @@ export type FederationClientWireMessage =
   | CapabilityResultPayload
   | CapabilityStreamPayload
   | CapabilityCancelPayload
+  | FederationPeerUpdatePayload
+  | PeerHandshakePayload
 
 /** Custom execution handler signature for executing delegated tasks. */
 export type DelegatedTaskExecutor = (

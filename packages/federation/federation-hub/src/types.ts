@@ -25,6 +25,8 @@ export interface PodCapabilities {
   tools?: string[]
   /** Supported tool names (alias). */
   supportedTools?: string[]
+  /** Direct peer WebSocket endpoint for overlay/LAN direct P2P transport. */
+  directEndpoint?: string
   /** Custom capability tags or environment descriptors. */
   tags?: Record<string, string>
 }
@@ -40,12 +42,26 @@ export interface PodInfo {
   name: string
   /** Declared capabilities of the pod. */
   capabilities: PodCapabilities
+  /** Direct peer WebSocket endpoint when declared. */
+  directEndpoint?: string
   /** Token permission level granted to this pod connection. */
   role: FederationTokenRole
   /** Current connection status. */
   status: PodStatus
   /** Timestamp (ms) of the last received heartbeat. */
   lastHeartbeat: number
+}
+
+/** Summary of a discovered peer pod and its direct transport endpoint. */
+export interface PeerDirectInfo {
+  /** Peer pod identifier. */
+  podId: string
+  /** Human-readable peer name. */
+  name: string
+  /** Direct WebSocket peer endpoint if declared. */
+  directEndpoint?: string
+  /** Online state. */
+  status: PodStatus
 }
 
 /** Registration message sent by a pod upon connecting to the hub. */
@@ -58,6 +74,8 @@ export interface FederationRegisterMessage {
   name: string
   /** Declared capabilities of the pod. */
   capabilities?: PodCapabilities
+  /** Direct peer WebSocket endpoint for overlay/LAN direct transport. */
+  directEndpoint?: string
 }
 
 /** Acknowledgement message sent by the hub confirming pod registration. */
@@ -68,6 +86,22 @@ export interface FederationRegisteredMessage {
   podId: string
   /** Hub runtime version string. */
   hubVersion: string
+  /** Active peer pods with advertised direct endpoints. */
+  peers?: PeerDirectInfo[]
+}
+
+/** Peer update notification broadcast to connected pods. */
+export interface FederationPeerUpdateMessage {
+  /** Discriminant message tag. */
+  type: 'peer/update'
+  /** Peer pod identifier. */
+  podId: string
+  /** Human-readable peer name. */
+  name?: string
+  /** Direct WebSocket peer endpoint if declared. */
+  directEndpoint?: string
+  /** Peer status. */
+  status: PodStatus
 }
 
 /** Heartbeat message sent by a pod to keep its registration alive. */
@@ -555,3 +589,4 @@ export type FederationWireMessage =
   | CapabilityResultMessage
   | CapabilityStreamMessage
   | CapabilityCancelMessage
+  | FederationPeerUpdateMessage

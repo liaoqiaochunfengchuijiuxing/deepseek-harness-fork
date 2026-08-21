@@ -693,6 +693,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Cancel an in-flight capability RPC.',
         parameters: [{ name: 'requestId', description: 'request identifier.' }],
       },
+      {
+        signature: 'isDirectConnected(podId: string): boolean',
+        description: 'Check if a direct P2P connection to target pod is currently active.',
+        parameters: [{ name: 'podId', description: 'target pod identifier.' }],
+        returns: 'true if directly connected.',
+      },
+      {
+        signature: 'getPeerDirectEndpoints(): Map<string, string>',
+        description: 'Get known direct peer endpoints.',
+        parameters: [],
+        returns: 'Map of podId -> direct WebSocket endpoint.',
+      },
     ],
   },
   {
@@ -3434,6 +3446,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationHeartbeatMessage {\n    type: \'federation/heartbeat\';\n    podId: string;\n}',
   },
   {
+    name: 'FederationPeerUpdateMessage',
+    declaration: 'export interface FederationPeerUpdateMessage {\n    type: \'peer/update\';\n    podId: string;\n    name?: string;\n    directEndpoint?: string;\n    status: PodStatus;\n}',
+  },
+  {
     name: 'FederationPingMessage',
     declaration: 'export interface FederationPingMessage {\n    type: \'ping\';\n}',
   },
@@ -3459,11 +3475,11 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationRegisteredMessage',
-    declaration: 'export interface FederationRegisteredMessage {\n    type: \'federation/registered\';\n    podId: string;\n    hubVersion: string;\n}',
+    declaration: 'export interface FederationRegisteredMessage {\n    type: \'federation/registered\';\n    podId: string;\n    hubVersion: string;\n    peers?: PeerDirectInfo[];\n}',
   },
   {
     name: 'FederationRegisterMessage',
-    declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    name: string;\n    capabilities?: PodCapabilities;\n}',
+    declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    name: string;\n    capabilities?: PodCapabilities;\n    directEndpoint?: string;\n}',
   },
   {
     name: 'FederationSessionGetMessage',
@@ -3539,7 +3555,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage | FederationPeerUpdateMessage;',
   },
   {
     name: 'FileDiff',
@@ -3995,7 +4011,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PodCapabilities',
-    declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    tools?: string[];\n    supportedTools?: string[];\n    tags?: Record<string, string>;\n}',
+    declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    tools?: string[];\n    supportedTools?: string[];\n    directEndpoint?: string;\n    tags?: Record<string, string>;\n}',
   },
   {
     name: 'PodConnectionStatus',
@@ -4003,7 +4019,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PodInfo',
-    declaration: 'export interface PodInfo {\n    podId: string;\n    name: string;\n    capabilities: PodCapabilities;\n    role: FederationTokenRole;\n    status: PodStatus;\n    lastHeartbeat: number;\n}',
+    declaration: 'export interface PodInfo {\n    podId: string;\n    name: string;\n    capabilities: PodCapabilities;\n    directEndpoint?: string;\n    role: FederationTokenRole;\n    status: PodStatus;\n    lastHeartbeat: number;\n}',
   },
   {
     name: 'PodStatus',

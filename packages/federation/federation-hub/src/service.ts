@@ -226,10 +226,29 @@ export class FederationHubService extends Service {
       role,
       status: 'online',
       lastHeartbeat: Date.now(),
+      ...(capabilities.directEndpoint ? { directEndpoint: capabilities.directEndpoint } : {}),
     }
 
     this.pods.set(podId, { info, socket })
     this.ctx.emit('federation/pod-registered', info)
+
+    // Broadcast peer online update to other connected pods
+    const peerOnlineMsg = JSON.stringify({
+      type: 'peer/update',
+      podId,
+      name,
+      ...(info.directEndpoint ? { directEndpoint: info.directEndpoint } : {}),
+      status: 'online',
+    })
+    for (const [otherId, otherRecord] of this.pods) {
+      if (otherId !== podId && otherRecord.info.status === 'online' && otherRecord.socket.readyState === 1) {
+        try {
+          otherRecord.socket.send(peerOnlineMsg)
+        } catch {
+          // ignore socket write error
+        }
+      }
+    }
   }
 
   /**
@@ -273,6 +292,21 @@ export class FederationHubService extends Service {
       record.info.status = status
       if (status === 'offline') {
         this.ctx.emit('federation/pod-offline', podId)
+        // Broadcast peer offline update to other connected pods
+        const peerOfflineMsg = JSON.stringify({
+          type: 'peer/update',
+          podId,
+          status: 'offline',
+        })
+        for (const [otherId, otherRecord] of this.pods) {
+          if (otherId !== podId && otherRecord.info.status === 'online' && otherRecord.socket.readyState === 1) {
+            try {
+              otherRecord.socket.send(peerOfflineMsg)
+            } catch {
+              // ignore socket write error
+            }
+          }
+        }
         // Clean up all stream subscriptions for this pod
         const prefix = `${podId}:`
         for (const [key, disposer] of this.subscriptions) {

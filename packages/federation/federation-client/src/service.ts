@@ -124,4 +124,21 @@ export class FederationClientService extends Service {
   cancelCapabilityRpc(requestId: string): void {
     this.client.cancelCapabilityRpc(requestId)
   }
+
+  /**
+   * Check if a direct P2P connection to target pod is currently active.
+   * @param podId - target pod identifier.
+   * @returns true if directly connected.
+   */
+  isDirectConnected(podId: string): boolean {
+    return this.client.isDirectConnected(podId)
+  }
+
+  /**
+   * Get known direct peer endpoints.
+   * @returns Map of podId -> direct WebSocket endpoint.
+   */
+  getPeerDirectEndpoints(): Map<string, string> {
+    return this.client.getPeerDirectEndpoints()
+  }
 }

@@ -231,7 +231,7 @@ describe('FederationSubprocessRuntime', () => {
         }
         if (req.method === 'writeStdin') {
           if (req.args?.data === 'fail-string') {
-            return Promise.reject('string-err')
+            return Promise.reject(new Error('string-err'))
           }
           return Promise.resolve({ type: 'capability/result', requestId: 'req-w', ok: true })
         }

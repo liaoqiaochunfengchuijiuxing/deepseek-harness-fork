@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
-import { WebSocket } from 'ws'
+import { WebSocket, WebSocketServer } from 'ws'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   FileSystem,
@@ -106,6 +106,16 @@ export interface FederationClientConfig {
   role?: 'read' | 'command' | 'manage' | 'takeover'
   /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
+  /** Direct peer server port to listen for incoming direct P2P connections on overlay/LAN. */
+  directPort?: number
+  /** Direct peer server host to bind on (default: '0.0.0.0'). */
+  directHost?: string
+  /** Advertised direct WebSocket endpoint for other pods to connect to. */
+  directEndpoint?: string
+  /** Whether direct P2P transport optimization is enabled (default: true). */
+  enableDirectTransport?: boolean
+  /** Static direct endpoints for known peers (podId -> wsUrl). */
+  peerDirectEndpoints?: Record<string, string>
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
   /**
@@ -189,6 +199,9 @@ export class FederationPodClient {
   private heartbeatTimer: NodeJS.Timeout | undefined
   private reconnectTimer: NodeJS.Timeout | undefined
   private currentReconnectDelay: number
+  private directServer: WebSocketServer | undefined
+  private readonly directPeerSockets = new Map<string, WebSocket>()
+  private readonly peerDirectEndpoints = new Map<string, string>()
   private readonly inFlightTasks = new Map<string, ActiveTask>()
   private readonly pendingSends = new Map<string, PendingSend>()
   private readonly pendingPersists = new Map<string, PendingPersist>()
@@ -205,6 +218,11 @@ export class FederationPodClient {
     private readonly config: FederationClientConfig,
   ) {
     this.currentReconnectDelay = config.reconnectDelayMs ?? 2000
+    if (config.peerDirectEndpoints) {
+      for (const [id, ep] of Object.entries(config.peerDirectEndpoints)) {
+        this.peerDirectEndpoints.set(id, ep)
+      }
+    }
   }
 
   /**
@@ -232,11 +250,141 @@ export class FederationPodClient {
   }
 
   /**
+   * Check if a direct P2P connection to target pod is currently active.
+   * @param podId - target pod identifier.
+   * @returns true if directly connected.
+   */
+  isDirectConnected(podId: string): boolean {
+    const ws = this.directPeerSockets.get(podId)
+    return ws !== undefined && ws.readyState === WebSocket.OPEN
+  }
+
+  /**
+   * Get known direct peer endpoints.
+   * @returns Map of podId -> direct WebSocket endpoint.
+   */
+  getPeerDirectEndpoints(): Map<string, string> {
+    return new Map(this.peerDirectEndpoints)
+  }
+
+  /**
+   * Establish or retrieve an active direct WebSocket connection to a peer pod.
+   * @param targetPodId - target pod identifier.
+   * @param endpoint - target direct WebSocket URL.
+   * @returns connected WebSocket, or undefined if failed.
+   */
+  async connectDirectPeer(targetPodId: string, endpoint: string): Promise<WebSocket | undefined> {
+    const existing = this.directPeerSockets.get(targetPodId)
+    if (existing && existing.readyState === WebSocket.OPEN) {
+      return existing
+    }
+    try {
+      const ws = new WebSocket(endpoint)
+      const connected = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+          try {
+            ws.terminate()
+          } catch {
+            // ignore timeout termination
+          }
+          resolve(false)
+        }, 2000)
+        ws.once('open', () => {
+          clearTimeout(timer)
+          resolve(true)
+        })
+        ws.once('error', () => {
+          clearTimeout(timer)
+          resolve(false)
+        })
+      })
+      if (!connected) return undefined
+      this.directPeerSockets.set(targetPodId, ws)
+      ws.send(JSON.stringify({
+        type: 'peer/handshake',
+        podId: this.config.podId,
+        ...(this.resolveToken() ? { token: this.resolveToken() } : {}),
+      }))
+      ws.on('message', (data: WebSocket.RawData) => {
+        void (async () => {
+          try {
+            const raw = rawDataToString(data)
+            const parsed = JSON.parse(raw) as FederationClientWireMessage
+            await this.handleMessage(parsed, ws)
+          } catch (err: unknown) {
+            this.ctx.logger.warn(`federation-client: direct peer message error: ${String(err)}`)
+          }
+        })()
+      })
+      ws.on('close', () => {
+        if (this.directPeerSockets.get(targetPodId) === ws) {
+          this.directPeerSockets.delete(targetPodId)
+        }
+      })
+      ws.on('error', () => {
+        try {
+          ws.terminate()
+        } catch {
+          // ignore peer socket error
+        }
+      })
+      return ws
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Start the client connection and reconnection lifecycle.
    */
   start(): void {
     if (this.disposed) return
+    if (this.config.directPort !== undefined && this.config.directPort > 0 && !this.directServer) {
+      this.startDirectServer()
+    }
     this.connect()
+  }
+
+  private startDirectServer(): void {
+    try {
+      this.directServer = new WebSocketServer({
+        port: this.config.directPort,
+        host: this.config.directHost ?? '0.0.0.0',
+      })
+      this.directServer.on('connection', (ws: WebSocket) => {
+        let senderPodId: string | undefined
+        ws.on('message', (data: WebSocket.RawData) => {
+          void (async () => {
+            try {
+              const raw = rawDataToString(data)
+              const parsed = JSON.parse(raw) as FederationClientWireMessage
+              if (parsed.type === 'peer/handshake') {
+                senderPodId = parsed.podId
+                this.directPeerSockets.set(parsed.podId, ws)
+                return
+              }
+              await this.handleMessage(parsed, ws)
+            } catch (err: unknown) {
+              this.ctx.logger.warn(`federation-client: direct peer message error: ${String(err)}`)
+            }
+          })()
+        })
+        ws.on('close', () => {
+          if (senderPodId !== undefined && this.directPeerSockets.get(senderPodId) === ws) {
+            this.directPeerSockets.delete(senderPodId)
+          }
+        })
+        ws.on('error', () => {
+          try {
+            ws.terminate()
+          } catch {
+            // ignore peer socket error
+          }
+        })
+      })
+    } catch (err: unknown) {
+      this.ctx.logger.warn(`federation-client: failed to start direct server: ${String(err)}`)
+    }
   }
 
   /**
@@ -253,6 +401,24 @@ export class FederationPodClient {
       this.reconnectTimer = undefined
     }
 
+    if (this.directServer) {
+      try {
+        this.directServer.close()
+      } catch {
+        // ignore server close error
+      }
+      this.directServer = undefined
+    }
+    for (const ws of this.directPeerSockets.values()) {
+      try {
+        ws.terminate()
+      } catch {
+        // ignore peer socket close error
+      }
+    }
+    this.directPeerSockets.clear()
+    this.peerDirectEndpoints.clear()
+
     for (const task of this.inFlightTasks.values()) {
       task.abortController.abort('federation client disposed')
     }
@@ -260,6 +426,7 @@ export class FederationPodClient {
     this.rejectPendingSends('federation client disposed')
     this.rejectPendingPersists('federation client disposed')
     this.rejectPendingLeases('federation client disposed')
+    this.rejectPendingCapabilities('federation client disposed')
     this.abortPendingInteractions()
 
     if (this.socket) {
@@ -410,14 +577,42 @@ export class FederationPodClient {
     onStream?: (chunk: unknown, done?: boolean) => void,
     timeoutMs?: number,
   ): Promise<CapabilityResult> {
-    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return { ok: false, code: 'disconnected', message: 'Client is not connected to federation hub' }
-    }
+    const timeout = timeoutMs ?? this.config.requestTimeoutMs ?? 15000
     if (onStream) {
       this.activeCapabilityStreams.set(req.requestId, onStream)
     }
 
-    const timeout = timeoutMs ?? this.config.requestTimeoutMs ?? 15000
+    // Direct P2P transport optimization: when targetPodId is specified and direct transport is enabled
+    const enableDirect = this.config.enableDirectTransport ?? true
+    if (enableDirect && req.targetPodId && req.targetPodId !== this.config.podId) {
+      let directSocket = this.directPeerSockets.get(req.targetPodId)
+      if (!directSocket || directSocket.readyState !== WebSocket.OPEN) {
+        const directEndpoint = this.peerDirectEndpoints.get(req.targetPodId)
+        if (directEndpoint) {
+          directSocket = await this.connectDirectPeer(req.targetPodId, directEndpoint)
+        }
+      }
+      if (directSocket && directSocket.readyState === WebSocket.OPEN) {
+        return new Promise<CapabilityResult>((resolve) => {
+          const timer = setTimeout(() => {
+            this.pendingCapabilities.delete(req.requestId)
+            resolve({ ok: false, code: 'timeout', message: 'Capability RPC timed out' })
+          }, timeout)
+
+          this.pendingCapabilities.set(req.requestId, { resolve, onStream, timer })
+          directSocket.send(JSON.stringify({
+            type: 'capability/request',
+            ...req,
+          }))
+        })
+      }
+    }
+
+    // Fallback: relay through hub
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return { ok: false, code: 'disconnected', message: 'Client is not connected to federation hub' }
+    }
+
     return new Promise<CapabilityResult>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingCapabilities.delete(req.requestId)
@@ -438,6 +633,19 @@ export class FederationPodClient {
    */
   cancelCapabilityRpc(requestId: string): void {
     this.activeCapabilityStreams.delete(requestId)
+    const cancelMsg = JSON.stringify({
+      type: 'capability/cancel',
+      requestId,
+    })
+    for (const ws of this.directPeerSockets.values()) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(cancelMsg)
+        } catch {
+          // ignore direct cancel error
+        }
+      }
+    }
     if (this.status === 'connected' && this.socket?.readyState === WebSocket.OPEN) {
       this.sendMessage({
         type: 'capability/cancel',
@@ -567,6 +775,7 @@ export class FederationPodClient {
       workspaces: this.config.workspaces,
       tools: this.config.tools,
       sandboxModes: this.config.sandboxModes,
+      ...(this.config.directEndpoint ? { directEndpoint: this.config.directEndpoint } : {}),
     }
     this.sendMessage({
       type: 'federation/register',
@@ -574,6 +783,7 @@ export class FederationPodClient {
       name: this.config.name,
       capabilities,
       role: this.config.role ?? 'command',
+      ...(this.config.directEndpoint ? { directEndpoint: this.config.directEndpoint } : {}),
     })
   }
 
@@ -604,10 +814,39 @@ export class FederationPodClient {
     })()
   }
 
-  private async handleMessage(msg: FederationClientWireMessage): Promise<void> {
+  private async handleMessage(
+    msg: FederationClientWireMessage,
+    senderSocket?: WebSocket,
+  ): Promise<void> {
     switch (msg.type) {
       case 'federation/registered': {
         this.startHeartbeat()
+        if (msg.peers) {
+          for (const peer of msg.peers) {
+            if (peer.directEndpoint && peer.status === 'online') {
+              this.peerDirectEndpoints.set(peer.podId, peer.directEndpoint)
+            } else if (peer.status === 'offline') {
+              this.peerDirectEndpoints.delete(peer.podId)
+            }
+          }
+        }
+        break
+      }
+      case 'peer/update': {
+        if (msg.status === 'online' && msg.directEndpoint) {
+          this.peerDirectEndpoints.set(msg.podId, msg.directEndpoint)
+        } else if (msg.status === 'offline') {
+          this.peerDirectEndpoints.delete(msg.podId)
+          const existing = this.directPeerSockets.get(msg.podId)
+          if (existing) {
+            try {
+              existing.close()
+            } catch {
+              // ignore direct socket close error
+            }
+            this.directPeerSockets.delete(msg.podId)
+          }
+        }
         break
       }
       case 'federation/heartbeat-ack': {
@@ -615,7 +854,7 @@ export class FederationPodClient {
         break
       }
       case 'subagent/start': {
-        await this.handleSubagentStart(msg)
+        await this.handleSubagentStart(msg, senderSocket)
         break
       }
       case 'subagent/abort': {
@@ -723,7 +962,7 @@ export class FederationPodClient {
         break
       }
       case 'capability/request': {
-        void this.handleCapabilityRequest(msg)
+        void this.handleCapabilityRequest(msg, senderSocket)
         break
       }
       case 'capability/cancel': {
@@ -758,61 +997,90 @@ export class FederationPodClient {
     this.activeCapabilityTasks.clear()
   }
 
-  private async handleCapabilityRequest(msg: CapabilityRequestPayload): Promise<void> {
+  private sendReply(payload: FederationClientWireMessage, senderSocket?: WebSocket): void {
+    if (this.disposed) return
+    if (senderSocket && senderSocket.readyState === WebSocket.OPEN) {
+      try {
+        senderSocket.send(JSON.stringify(payload))
+        return
+      } catch {
+        // ignore socket write error
+      }
+    }
+    this.sendMessage(payload)
+  }
+
+  private async handleCapabilityRequest(
+    msg: CapabilityRequestPayload,
+    senderSocket?: WebSocket,
+  ): Promise<void> {
     const controller = new AbortController()
     this.activeCapabilityTasks.set(msg.requestId, controller)
+
     try {
       if (msg.seam === 'fs') {
         const fsService = this.ctx.fs as FileSystem | undefined
         if (!fsService) {
           throw new Error('Filesystem service (ctx.fs) is not available on this pod')
         }
-        const result = await this.dispatchFsMethod(fsService, msg.method, msg.args, controller.signal, msg.requestId)
-        if (!this.disposed) {
-          this.sendMessage({
-            type: 'capability/result',
-            requestId: msg.requestId,
-            ok: true,
-            value: result,
-          })
-        }
+        const result = await this.dispatchFsMethod(
+          fsService,
+          msg.method,
+          msg.args,
+          controller.signal,
+          msg.requestId,
+          (p) => {
+            this.sendReply(p, senderSocket)
+          },
+        )
+        this.sendReply({
+          type: 'capability/result',
+          requestId: msg.requestId,
+          ok: true,
+          value: result,
+        }, senderSocket)
       } else {
         const subprocessService = this.ctx.subprocess as SubprocessRuntime | undefined
         if (!subprocessService) {
           throw new Error('Subprocess service (ctx.subprocess) is not available on this pod')
         }
-        const result = await this.dispatchSubprocessMethod(subprocessService, msg.method, msg.args, controller.signal, msg.requestId)
-        if (!this.disposed) {
-          this.sendMessage({
-            type: 'capability/result',
-            requestId: msg.requestId,
-            ok: true,
-            value: result,
-          })
-        }
+        const result = await this.dispatchSubprocessMethod(
+          subprocessService,
+          msg.method,
+          msg.args,
+          controller.signal,
+          msg.requestId,
+          (p) => {
+            this.sendReply(p, senderSocket)
+          },
+        )
+        this.sendReply({
+          type: 'capability/result',
+          requestId: msg.requestId,
+          ok: true,
+          value: result,
+        }, senderSocket)
       }
     } catch (err: unknown) {
-      if (!this.disposed) {
-        if (err instanceof FsError) {
-          this.sendMessage({
-            type: 'capability/result',
-            requestId: msg.requestId,
-            ok: false,
-            error: {
-              code: err.code,
-              message: err.message,
-            },
-          })
-        } else {
-          this.sendMessage({
-            type: 'capability/result',
-            requestId: msg.requestId,
-            ok: false,
-            error: {
-              message: err instanceof Error ? err.message : String(err),
-            },
-          })
-        }
+      if (err instanceof FsError) {
+        this.sendReply({
+          type: 'capability/result',
+          requestId: msg.requestId,
+          ok: false,
+          error: {
+            code: err.code,
+            message: err.message,
+          },
+        }, senderSocket)
+      } else {
+        this.sendReply({
+          type: 'capability/result',
+          requestId: msg.requestId,
+          ok: false,
+          error: {
+            message: err instanceof Error ? err.message : String(err),
+          },
+        }, senderSocket)
       }
     } finally {
       this.activeCapabilityTasks.delete(msg.requestId)
@@ -825,7 +1093,11 @@ export class FederationPodClient {
     args: Record<string, unknown>,
     signal: AbortSignal,
     requestId: string,
+    sendChunk?: (payload: FederationClientWireMessage) => void,
   ): Promise<unknown> {
+    const emit = sendChunk ?? ((p) => {
+      this.sendMessage(p)
+    })
     switch (method) {
       case 'resolve':
         return await fs.resolve(args.path as string, { ...(args.cwd !== undefined ? { cwd: args.cwd as string } : {}), signal })
@@ -845,7 +1117,7 @@ export class FederationPodClient {
         let seq = 0
         const iterable = await fs.streamText(args.target as FsTarget, signal)
         for await (const chunk of iterable) {
-          this.sendMessage({
+          emit({
             type: 'capability/stream',
             requestId,
             seq: seq++,
@@ -887,7 +1159,11 @@ export class FederationPodClient {
     args: Record<string, unknown>,
     signal: AbortSignal,
     requestId: string,
+    sendChunk?: (payload: FederationClientWireMessage) => void,
   ): Promise<unknown> {
+    const emit = sendChunk ?? ((p) => {
+      this.sendMessage(p)
+    })
     switch (method) {
       case 'resolveExecutable': {
         const env = (args.options as { env?: Record<string, string> } | undefined)?.env
@@ -900,7 +1176,7 @@ export class FederationPodClient {
 
         if (handle.stdout) {
           handle.stdout.on('data', (data: Buffer) => {
-            this.sendMessage({
+            emit({
               type: 'capability/stream',
               requestId,
               seq: 0,
@@ -910,7 +1186,7 @@ export class FederationPodClient {
         }
         if (handle.stderr) {
           handle.stderr.on('data', (data: Buffer) => {
-            this.sendMessage({
+            emit({
               type: 'capability/stream',
               requestId,
               seq: 0,
@@ -929,7 +1205,7 @@ export class FederationPodClient {
             stderrData = handle.collected.stderr.readFrom(0).text
           }
           if (stdoutData) {
-            this.sendMessage({
+            emit({
               type: 'capability/stream',
               requestId,
               seq: 1,
@@ -937,14 +1213,14 @@ export class FederationPodClient {
             })
           }
           if (stderrData) {
-            this.sendMessage({
+            emit({
               type: 'capability/stream',
               requestId,
               seq: 2,
               chunk: { stream: 'stderr', data: stderrData },
             })
           }
-          this.sendMessage({
+          emit({
             type: 'capability/stream',
             requestId,
             seq: 3,
@@ -991,7 +1267,7 @@ export class FederationPodClient {
         const handleId = randomUUID()
         this.activeSubprocesses.set(handleId, terminal)
         void terminal.done.then(() => {
-          this.sendMessage({
+          emit({
             type: 'capability/stream',
             requestId,
             seq: 1,
@@ -1105,16 +1381,19 @@ export class FederationPodClient {
     }
   }
 
-  private async handleSubagentStart(req: RemoteSubagentStartPayload): Promise<void> {
+  private async handleSubagentStart(
+    req: RemoteSubagentStartPayload,
+    senderSocket?: WebSocket,
+  ): Promise<void> {
     // 1. Validate capability constraints
     if (!isCwdPermitted(req.cwd, this.config.workspaces)) {
-      this.sendMessage({
+      this.sendReply({
         type: 'subagent/stop',
         id: req.id,
         output: [],
         stopReason: 'error',
         diagnostic: `requested cwd '${req.cwd ?? ''}' is outside permitted pod workspaces`,
-      })
+      }, senderSocket)
       return
     }
 
@@ -1133,24 +1412,24 @@ export class FederationPodClient {
             id: req.id,
             delta,
           }
-          this.sendMessage(chunkMsg)
+          this.sendReply(chunkMsg, senderSocket)
         }
       }
 
       const result = await this.executeTask(req, onChunk, abortController.signal)
       if (!this.disposed) {
-        this.sendMessage(result)
+        this.sendReply(result, senderSocket)
       }
     } catch (err: unknown) {
       if (!this.disposed) {
         const isAborted = abortController.signal.aborted
-        this.sendMessage({
+        this.sendReply({
           type: 'subagent/stop',
           id: req.id,
           output: [],
           stopReason: isAborted ? 'aborted' : 'error',
           diagnostic: err instanceof Error ? err.message : String(err),
-        })
+        }, senderSocket)
       }
     } finally {
       this.inFlightTasks.delete(req.id)

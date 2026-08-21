@@ -217,18 +217,32 @@ export class FederationHubServer {
 
       if (msg.type === 'federation/register') {
         podId = msg.podId
+        const capabilities = {
+          ...msg.capabilities,
+          ...(msg.directEndpoint ? { directEndpoint: msg.directEndpoint } : {}),
+        }
         this.service.registerPod(
           msg.podId,
           msg.name,
-          msg.capabilities ?? {},
+          capabilities,
           role,
           socket,
         )
+
+        const peers = this.service.listPods()
+          .filter(p => p.podId !== msg.podId && p.status === 'online')
+          .map(p => ({
+            podId: p.podId,
+            name: p.name,
+            ...(p.capabilities.directEndpoint ? { directEndpoint: p.capabilities.directEndpoint } : {}),
+            status: p.status,
+          }))
 
         socket.send(JSON.stringify({
           type: 'federation/registered',
           podId: msg.podId,
           hubVersion: '0.1.0',
+          peers,
         }))
         return
       }
