@@ -4,7 +4,7 @@
 
 ## M0 前置（已完成）
 
-- [x] 设计文档落档：`.agents/notes/proposed/feature/2026-08-21-dsh-hub-pod-federation`（en/zh/i18n 三元组）
+- [x] 设计文档落档：`.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation`（en/zh/i18n 三元组）
 - [x] 任务书与 TODO 拆解（本文件）
 - [ ] 待决策 #2：token 铸造载体（M1 可暂用手工配置）
 
@@ -15,7 +15,7 @@
 - [x] T1.3 `dsh-federation-client` pod 插件（外拨/能力声明/执行）
 - [x] T1.4 组合层：federation profile + pod 组合
 - [x] T1.5 双进程 e2e + keyless 快照
-- [ ] T1.6 文档与 Agent Note 收口
+- [x] T1.6 文档与 Agent Note 收口
 
 ## M2 只读原生体验（v1）
 

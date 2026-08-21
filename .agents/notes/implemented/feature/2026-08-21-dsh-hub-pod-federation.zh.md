@@ -1,6 +1,6 @@
 # Agent Note: 面向多节点 DeepSeek Harness 的 hub-pod 联邦
 
-Status: proposed
+Status: implemented
 
 [English](2026-08-21-dsh-hub-pod-federation.md) | 中文
 
@@ -10,7 +10,7 @@ DeepSeek Harness 是单进程、单用户、本地优先的工作台。在多台
 
 用通用的分布式状态复制来解决这个问题会与产品自身的不变量正面冲突：会话日志是单一逻辑序的 append-only 流，`deriveMessages()` 和全部运行时 invariant 都依赖这个顺序，已发布的持久化实现对 stale writer 是拒绝而不是合并并发写。设计必须在引入多写者会话之外，交付多节点可达与委派能力。
 
-## Proposal
+## Decision
 
 **hub-pod 联邦**：一个云端 **hub** 作为控制面，任意数量的 **pod**（机器或设备）作为数据面。hub 本身是一个运行 federation profile 的 dsh 实例--pod 注册表、拨入中继、会话存储、token 认证。pod 是带联邦客户端插件的 dsh 实例：通过一条持久的认证连接向 hub 外拨、声明自身能力、接受委派的工作。
 
@@ -107,7 +107,7 @@ Pod 模式是组合选择（profile），不是独立产品：
 
 **先做 capability-server 粒度（hub agent 的每个工具调用都落在 pod 上执行）。** 延后而非否决：subagent 粒度的委派先落地，因为它匹配既有 seam 及其 continuation 语义；远端 fs/subprocess provider 留作 v4 的细粒度远程控制精修。
 
-## Acceptance criteria
+## Consequences
 
 - 两台机器加一个 hub 部署：hub 的 UI 列出两个 pod 及实时在线状态；hub agent 的 `tool_subagent` 调用经 remote provider 在 pod 上完成工作、返回结构化结果与用量，并在 pod 中途断连时映射出 stop reason。
 - 任意设备的浏览器经认证通道打开 hub 所属会话，看到流式输出与多标签一致性，无未认证端口。

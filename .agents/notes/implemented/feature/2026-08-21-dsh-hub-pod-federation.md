@@ -1,6 +1,6 @@
 # Agent Note: Hub-and-pod federation for multi-node DeepSeek Harness
 
-Status: proposed
+Status: implemented
 
 English | [中文](2026-08-21-dsh-hub-pod-federation.zh.md)
 
@@ -10,7 +10,7 @@ DeepSeek Harness is a single-process, single-user, local-first workbench. A user
 
 Solving this with general distributed state replication would fight the product's own invariants: the session log is append-only with one logical order, `deriveMessages()` and every runtime invariant assume that order, and shipped persistence rejects a stale writer rather than merging concurrent ones. The design must deliver multi-node reachability and delegation without introducing multi-writer sessions.
 
-## Proposal
+## Decision
 
 A **hub-and-pod federation**: one cloud **hub** as the control plane, any number of **pods** (machines or devices) as the data plane. The hub is itself a dsh instance running a federation profile - pod registry, dial-in relay, session store, token authentication. A pod is a dsh instance with a federation client plugin: it dials out to the hub over one persistent authenticated connection, declares its capabilities, and accepts delegated work.
 
@@ -107,7 +107,7 @@ Workspace files are not carried by session sync. Work spans nodes through a shar
 
 **Capability-server granularity first (hub agent executing every tool call on a pod).** Deferred rather than rejected: subagent-grained delegation ships first because it matches the existing seam and its continuation semantics; remote fs/subprocess providers remain the v4 refinement for fine-grained remote control.
 
-## Acceptance criteria
+## Consequences
 
 - Two machines and a hub deployment: the hub's UI lists both pods with live presence; a hub agent's `tool_subagent` call with the remote provider completes work on a pod, returns a structured result and usage, and survives a mid-run pod disconnect with a mapped stop reason.
 - A browser on any device opens a hub-owned session and sees streaming output and multi-tab consistency, over an authenticated channel, with no unauthenticated port.

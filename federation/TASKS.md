@@ -1,6 +1,6 @@
 # Hub-Pod 联邦开发任务书
 
-状态依据与设计决策见 [Agent Note: hub-and-pod federation](../.agents/notes/proposed/feature/2026-08-21-dsh-hub-pod-federation.zh.md)。本文件把该设计的 v0–v4 分期拆成 PR 粒度的任务；[TODO.md](TODO.md) 是对应的执行清单。
+状态依据与设计决策见 [Agent Note: hub-and-pod federation](../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.zh.md)。本文件把该设计的 v0–v4 分期拆成 PR 粒度的任务；[TODO.md](TODO.md) 是对应的执行清单。
 
 ## 阅读约定
 
