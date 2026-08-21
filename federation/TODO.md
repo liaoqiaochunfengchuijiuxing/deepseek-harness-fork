@@ -34,11 +34,11 @@
 
 ## M4 管理与漫游（v3）
 
-- [ ] 待决策 #3：hub 会话存储后端
-- [ ] T4.1 远端会话持久化 provider（spool + 异步上传）
-- [ ] T4.2 所有权租约与转移协议
-- [ ] T4.3 fork-to-local / push-to-hub
-- [ ] T4.4 测试/文档收口
+- [x] 待决策 #3：hub 会话存储后端复用已挂载的 `ctx.sessionPersistence`（JSONL/SQLite）；租约在 `FederationHubService` 内存表
+- [x] T4.1 远端会话持久化 provider（spool + 异步上传）
+- [x] T4.2 所有权租约与转移协议
+- [x] T4.3 fork-to-local / push-to-hub
+- [x] T4.4 测试/文档收口
 
 ## M5 peer 与细粒度（v4，可选）
 

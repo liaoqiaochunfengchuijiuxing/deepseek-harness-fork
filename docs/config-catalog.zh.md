@@ -665,7 +665,7 @@ export interface FederationClientConfig {
   sandboxModes?: string[]
   /** Declared role for this pod. */
   role?: 'read' | 'command' | 'manage' | 'takeover'
-  /** Bound (ms) on a `session/send` round-trip. */
+  /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
@@ -1856,6 +1856,26 @@ export interface JsonRpcConfig {
 依赖：`Readable`（`node:stream`）· `Writable`（`node:stream`）
 
 来源：[`packages/sdk/server/src/index.ts:29`](../packages/sdk/server/src/index.ts)
+
+<a id="deepseek-aidsh-session-persistence-federation"></a>
+
+## `@deepseek-ai/dsh-session-persistence-federation`
+
+需要：`sessions`
+
+```ts config-catalog
+/** Plugin config for federation session persistence. */
+export interface Config {
+  /** Directory for local spool files. Required. */
+  spoolRoot: string
+  /** Maximum cold Session preparations retained for history-to-resume reuse. */
+  preparedSessionCacheSize?: number
+  /** Fixed live-event coalescing window; not a backend completion deadline. */
+  writeBatchMaxDelayMs?: number
+}
+```
+
+来源：[`packages/federation/session-persistence-federation/src/index.ts:38`](../packages/federation/session-persistence-federation/src/index.ts)
 
 <a id="deepseek-aidsh-session-persistence-jsonl"></a>
 

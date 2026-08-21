@@ -670,6 +670,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'sessionId', description: 'target session on the writer node.' }, { name: 'content', description: 'user-role content blocks.' }, { name: 'clientMessageId', description: 'idempotency key scoped to `sessionId`.' }],
         returns: 'accepted message id, or a structured failure.',
       },
+      {
+        signature: 'persistSession( sessionId: SessionId, events: SessionEvent[], header?: SessionHeader, ): Promise<SessionPersistResult>',
+        description: 'Upload a locally-spooled event batch to hub persistence.',
+        parameters: [{ name: 'sessionId', description: 'session whose log is being uploaded.' }, { name: 'events', description: 'contiguous events to append.' }, { name: 'header', description: 'session header when the hub has not materialized this session.' }],
+        returns: 'last stored seq, or a structured failure.',
+      },
+      {
+        signature: 'leaseSession( action: \'session/lease-acquire\' | \'session/lease-release\', sessionId: SessionId, ): Promise<SessionLeaseResult>',
+        description: 'Acquire or release the hub writer lease for a session.',
+        parameters: [{ name: 'action', description: 'acquire or release.' }, { name: 'sessionId', description: 'target session.' }],
+        returns: 'holder pod id, or a structured failure.',
+      },
     ],
   },
   {
@@ -698,6 +710,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'registerPod( podId: string, name: string, capabilities: PodCapabilities, role: FederationTokenRole, socket: WebSocket, ): void',
         description: 'Register or update a connected pod.',
         parameters: [{ name: 'podId', description: 'unique pod identifier.' }, { name: 'name', description: 'human-readable name.' }, { name: 'capabilities', description: 'declared capabilities.' }, { name: 'role', description: 'token permission role.' }, { name: 'socket', description: 'active WebSocket connection to the pod.' }],
+      },
+      {
+        signature: 'markSocketClosed(podId: string, socket: WebSocket): void',
+        description: 'Mark a pod offline only when `socket` is still the registered connection. A replaced connection\'s stale close must not offline the live successor.',
+        parameters: [{ name: 'podId', description: 'pod whose socket closed.' }, { name: 'socket', description: 'the socket that closed.' }],
       },
       {
         signature: 'touchHeartbeat(podId: string): void',
@@ -741,6 +758,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Forward a user question to the commanding pod. Without a commander, call `fallback` (the registered local provider) when provided.',
         parameters: [{ name: 'request', description: 'questions plus optional calling agent.' }, { name: 'fallback', description: 'local `ctx.userQuestions.ask` when this hub does not own the ask.' }],
         returns: 'the human\'s answer.',
+      },
+      {
+        signature: 'leaseHolder(sessionId: SessionId): string | undefined',
+        description: 'The pod currently holding the writer lease, if any.',
+        parameters: [{ name: 'sessionId', description: 'session to inspect.' }],
+        returns: 'holder pod id, or undefined.',
       },
     ],
   },
@@ -3405,12 +3428,32 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationSessionGetResultMessage {\n    type: \'session/get-result\';\n    requestId: string;\n    session?: SessionInspectionResult;\n    error?: string;\n}',
   },
   {
+    name: 'FederationSessionLeaseAcquireMessage',
+    declaration: 'export interface FederationSessionLeaseAcquireMessage {\n    type: \'session/lease-acquire\';\n    requestId: string;\n    sessionId: SessionId;\n}',
+  },
+  {
+    name: 'FederationSessionLeaseReleaseMessage',
+    declaration: 'export interface FederationSessionLeaseReleaseMessage {\n    type: \'session/lease-release\';\n    requestId: string;\n    sessionId: SessionId;\n}',
+  },
+  {
+    name: 'FederationSessionLeaseResultMessage',
+    declaration: 'export interface FederationSessionLeaseResultMessage {\n    type: \'session/lease-result\';\n    requestId: string;\n    holder?: string;\n    code?: \'unauthorized\' | \'stale-writer\' | \'invalid\';\n    error?: string;\n}',
+  },
+  {
     name: 'FederationSessionListMessage',
     declaration: 'export interface FederationSessionListMessage {\n    type: \'session/list\';\n    requestId: string;\n    cwd?: string;\n    limit?: number;\n}',
   },
   {
     name: 'FederationSessionListResultMessage',
     declaration: 'export interface FederationSessionListResultMessage {\n    type: \'session/list-result\';\n    requestId: string;\n    sessions: SessionSummary[];\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionPersistMessage',
+    declaration: 'export interface FederationSessionPersistMessage {\n    type: \'session/persist\';\n    requestId: string;\n    sessionId: SessionId;\n    header?: SessionHeader;\n    events: SessionEvent[];\n}',
+  },
+  {
+    name: 'FederationSessionPersistResultMessage',
+    declaration: 'export interface FederationSessionPersistResultMessage {\n    type: \'session/persist-result\';\n    requestId: string;\n    lastSeq?: number;\n    code?: \'unauthorized\' | \'invalid\' | \'stale-writer\' | \'unavailable\';\n    error?: string;\n}',
   },
   {
     name: 'FederationSessionSearchMessage',
@@ -3450,7 +3493,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage;',
   },
   {
     name: 'FileDiff',
@@ -4265,6 +4308,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionInspectionResult {\n    header: SessionHeader;\n    events: readonly SessionEvent[];\n}',
   },
   {
+    name: 'SessionLeaseResult',
+    declaration: 'export type SessionLeaseResult = {\n    ok: true;\n    holder: string;\n} | {\n    ok: false;\n    code: \'disconnected\' | \'timeout\' | \'unauthorized\' | \'stale-writer\' | \'invalid\';\n    message: string;\n};',
+  },
+  {
     name: 'SessionLineageNode',
     declaration: 'export interface SessionLineageNode {\n    session: SessionRecord;\n    descendants: SessionLineageNode[];\n}',
   },
@@ -4287,6 +4334,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionPersistenceSnapshot',
     declaration: 'export interface SessionPersistenceSnapshot {\n    header: SessionHeader;\n    revision: SessionPersistenceRevision;\n}',
+  },
+  {
+    name: 'SessionPersistResult',
+    declaration: 'export type SessionPersistResult = {\n    ok: true;\n    lastSeq: number;\n} | {\n    ok: false;\n    code: \'disconnected\' | \'timeout\' | \'unauthorized\' | \'invalid\' | \'stale-writer\' | \'unavailable\';\n    message: string;\n};',
   },
   {
     name: 'SessionPreparation',

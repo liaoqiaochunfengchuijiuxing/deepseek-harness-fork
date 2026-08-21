@@ -515,9 +515,26 @@ getActiveTaskCount(): number
  * @returns accepted message id, or a structured failure.
  */
 sendToSession( sessionId: SessionId, content: ContentBlock[], clientMessageId: string, ): Promise<SessionSendResult>
+
+/**
+ * Upload a locally-spooled event batch to hub persistence.
+ * @param sessionId - session whose log is being uploaded.
+ * @param events - contiguous events to append.
+ * @param header - session header when the hub has not materialized this session.
+ * @returns last stored seq, or a structured failure.
+ */
+persistSession( sessionId: SessionId, events: SessionEvent[], header?: SessionHeader, ): Promise<SessionPersistResult>
+
+/**
+ * Acquire or release the hub writer lease for a session.
+ * @param action - acquire or release.
+ * @param sessionId - target session.
+ * @returns holder pod id, or a structured failure.
+ */
+leaseSession( action: 'session/lease-acquire' | 'session/lease-release', sessionId: SessionId, ): Promise<SessionLeaseResult>
 ```
 
-Types: [ContentBlock](llm-streaming.md) · [SessionId](core.md)
+Types: [ContentBlock](llm-streaming.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionId](core.md)
 
 Source: [`packages/federation/federation-client/src/service.ts:23`](../../packages/federation/federation-client/src/service.ts)
 
@@ -557,6 +574,14 @@ getPod(podId: string): PodInfo | undefined
  * @param socket - active WebSocket connection to the pod.
  */
 registerPod( podId: string, name: string, capabilities: PodCapabilities, role: FederationTokenRole, socket: WebSocket, ): void
+
+/**
+ * Mark a pod offline only when `socket` is still the registered connection.
+ * A replaced connection's stale close must not offline the live successor.
+ * @param podId - pod whose socket closed.
+ * @param socket - the socket that closed.
+ */
+markSocketClosed(podId: string, socket: WebSocket): void
 
 /**
  * Update the heartbeat timestamp for a pod.
@@ -619,11 +644,18 @@ handleApprovalRequest( req: ApprovalRequest, next: () => Promise<ApprovalOutcome
  * @returns the human's answer.
  */
 routeQuestion( request: AskUserQuestionRequest, fallback?: () => Promise<AskUserQuestionAnswer>, ): Promise<AskUserQuestionAnswer>
+
+/**
+ * The pod currently holding the writer lease, if any.
+ * @param sessionId - session to inspect.
+ * @returns holder pod id, or undefined.
+ */
+leaseHolder(sessionId: SessionId): string | undefined
 ```
 
-Types: [ApprovalOutcome](approval.md) · [ApprovalRequest](approval.md) · [AskUserQuestionAnswer](user-questions.md) · [AskUserQuestionRequest](user-questions.md)
+Types: [ApprovalOutcome](approval.md) · [ApprovalRequest](approval.md) · [AskUserQuestionAnswer](user-questions.md) · [AskUserQuestionRequest](user-questions.md) · [SessionId](core.md)
 
-Source: [`packages/federation/federation-hub/src/service.ts:108`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:112`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 
@@ -832,7 +864,7 @@ Answer a hub-forwarded approval for a session this pod commands. Return an outco
 
 Types: [ApprovalOutcome](approval.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:41`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:43`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="federationpod-offline--emit"></a>
 
@@ -849,7 +881,7 @@ Emitted when a registered pod is marked offline due to heartbeat timeout or sock
 'federation/pod-offline': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:57`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:61`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-registered--emit"></a>
 
@@ -866,7 +898,7 @@ Emitted when a pod completes handshake and registers with the hub.
 'federation/pod-registered': (pod: PodInfo) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:51`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:55`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-unregistered--emit"></a>
 
@@ -883,7 +915,7 @@ Emitted when a pod is explicitly removed from the registry.
 'federation/pod-unregistered': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:63`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:67`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationquestion-request--waterfall"></a>
 
@@ -903,7 +935,7 @@ Answer a hub-forwarded user question for a session this pod commands. Return an 
 
 Types: [AskUserQuestionAnswer](user-questions.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:51`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:53`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="subagent-events"></a>
 

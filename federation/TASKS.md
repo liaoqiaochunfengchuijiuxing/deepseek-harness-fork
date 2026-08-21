@@ -166,6 +166,6 @@ hub 租约表；交接 = flush → release → 新节点 acquire → resume；st
 
 1. `ctx.sessionSources` 的最终命名与归属包（M2 开工前）。
 2. token 的铸造/吊销载体：CLI 子命令还是 hub Web UI（M1 开工前，M1 可先用手工配置文件）。
-3. hub 侧联邦会话存储后端：复用 SQLite provider 还是新增表结构（M4 前）。
+3. hub 侧联邦会话存储后端：复用 hub 已挂载的 `ctx.sessionPersistence`（JSONL 或 SQLite）；不新增事件日志表。写者租约是 `FederationHubService` 上的内存表。
 4. 心跳间隔、离线判定、在途任务排队上限等 tunable 的默认值（M1 实现时按 Config 字段落，取值进 Agent Note）。
 5. M2 管理 wire 的版本协商具体形式（握手字段 vs URL 版本段）。

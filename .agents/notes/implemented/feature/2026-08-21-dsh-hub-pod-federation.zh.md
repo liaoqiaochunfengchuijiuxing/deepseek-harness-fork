@@ -83,11 +83,12 @@ Pod 模式是组合选择（profile），不是独立产品：
 | `dsh-session-source` | 两侧 | `ctx.sessionSources` Service Definition 与多源注册表 |
 | `dsh-session-source-local` | 两侧 | 包装活会话与持久化的本地 SessionSource |
 | `dsh-session-source-federation` | pod | 经 pod-hub 连接的远端 SessionSource |
+| `dsh-session-persistence-federation` | pod | 本地 JSON spool 加异步 `session/persist` 上传到 hub 写者存储 |
 | profile 增补 | 两侧 | `federation`（hub = base + web-app + federation-hub）；pod = 既有 profile + federation-client |
 
 ## Phasing
 
-v0、v1 与 v2 已在树中；v3 与 v4 仍待做。
+v0 到 v3 已在树中；v4 仍待做。
 
 - v0：hub 带注册表、外拨连接和 `dsh-subagent-remote` 服务端端点；pod 客户端插件；hub 委派 pod；pod 用浏览器触达 hub 会话。
 - v1：只读级联邦会话源——pod 上原生的远端会话列表、搜索、实时渲染，带来源徽标，未知节点类型回退既有 generic 卡片。
@@ -113,13 +114,15 @@ v0、v1 与 v2 已在树中；v3 与 v4 仍待做。
 
 ## Consequences
 
-v0、v1 与 v2 已在树中：
+v0、v1、v2 与 v3 已在树中：
 
 - hub 注册表列出 pod 及实时在线状态。remote subagent 运行返回结构化结果与用量；中途断连映射为 stop reason。凭证不跨节点；委派结果只携带任务输出与用量。
 - hub 所属会话可经认证的 pod 连接与 hub 自身的 web profile 打开。未认证升级一律拒绝。
 - 在 pod 上，远端会话出现在 `ctx.sessionSources` 列表中并带来源身份；断线标记 degraded，重连后从上次 seq 续订。打开远端会话使用本地渲染器；未知会话节点类型保留既有 generic 卡片。
 
-持有 command 能力的 pod 按到达顺序把 `session/send` 送进活着的写者节点 inbox，并用 `clientMessageId` 幂等；没有活 agent 时以 `writer-offline` 失败。一次成功的发送把该 pod 记为指挥者：该会话上的 hub `approval/request` 与 `ctx.userQuestions.ask` 经该连接转发，没有应答者时 fail-closed。在途断线绝不自动批准；被替换 socket 的过期 close 不会把后继连接标成离线；在途重复的审批 `requestId` 会合并。fork-to-local、写者租约与 peer 中继仍未在树中。
+持有 command 能力的 pod 按到达顺序把 `session/send` 送进活着的写者节点 inbox，并用 `clientMessageId` 幂等；没有活 agent 时以 `writer-offline` 失败。一次成功的发送把该 pod 记为指挥者：该会话上的 hub `approval/request` 与 `ctx.userQuestions.ask` 经该连接转发，没有应答者时 fail-closed。在途断线绝不自动批准；被替换 socket 的过期 close 不会把后继连接标成离线；在途重复的审批 `requestId` 会合并。
+
+漫游 pod 把 `dsh-session-persistence-federation` 挂为 `ctx.sessionPersistence`：append 先在本地 JSON spool 落盘，再按单调 seq 续传上传。hub 把 `session/persist` 写入现有的 JSONL 或 SQLite 后端；租约存在 `FederationHubService` 的内存表里。`prepare` 在客户端已连接时获取写者租约；租约被其他 pod 持有时以 stale-writer 失败；pod 离线会释放其租约。`/fork_to_local` 把 hub 日志复制进本地持久化，且 `deriveMessages()` 一致；未知必读事件类型与外版本格式会被拒绝。`/push_to_hub` 上传本地日志。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。peer 中继仍未在树中。
 
 ## Testing
 
@@ -128,6 +131,7 @@ v0、v1 与 v2 已在树中：
 - T3.1：`packages/federation/federation-hub/tests/federation-hub.spec.ts` 把有序、幂等的 `session/send` 送进活 agent inbox，并拒绝 `read` token 与缺失写者。`packages/federation/federation-client/tests/remote-send.spec.ts` 在真实 WebSocket 上跑 `/remote_send`。
 - T3.2：同一份 hub spec 把审批与问询转发到指挥者、认领结果，并在指挥者缺失或无应答时 fail-closed；client spec 在真实 WebSocket 上通过程序化 answerer 与 pod waterfall 作答。
 - T3.3：`packages/federation/federation-hub/tests/federation-e2e-m3.spec.ts` 把命令送进写者 inbox、把审批路由到指挥 pod 且不自动批准、在途断线将未决审批 fail-closed，并在重连后用同一 `clientMessageId` 幂等重发。client spec 合并在途重复的 `requestId`。
+- M4：`packages/federation/session-persistence-federation/tests/session-persistence-federation.spec.ts` 在 hub 上传失败时仍本地 append、重试未确认前缀，并拒绝未知必读事件。hub persist/lease 单测跳过已存 seq、拒绝 stale-writer，并在离线时释放租约。`packages/federation/federation-hub/tests/federation-e2e-m4.spec.ts` 上传 spool 批次、强制活租约、fork 后 derived messages 一致，并断言 persist 载荷不含凭据。
 
 ## Risks
 

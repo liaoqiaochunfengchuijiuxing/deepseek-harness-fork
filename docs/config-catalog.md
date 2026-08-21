@@ -663,7 +663,7 @@ export interface FederationClientConfig {
   sandboxModes?: string[]
   /** Declared role for this pod. */
   role?: 'read' | 'command' | 'manage' | 'takeover'
-  /** Bound (ms) on a `session/send` round-trip. */
+  /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
@@ -763,7 +763,7 @@ export interface TokenUsageSummary {
 
 Depends on: [`ApprovalOutcome`](subsystems/approval.md) · [`AskUserQuestionAnswer`](subsystems/user-questions.md) · `AskUserQuestionItem` (`@deepseek-ai/dsh-user-questions/types`) · [`ContentBlock`](subsystems/llm-streaming.md) · [`SessionId`](subsystems/core.md) · [`SubagentStopReason`](../packages/subagent/subagent/src/index.ts)
 
-Source: [`packages/federation/federation-client/src/index.ts:25`](../packages/federation/federation-client/src/index.ts)
+Source: [`packages/federation/federation-client/src/index.ts:29`](../packages/federation/federation-client/src/index.ts)
 
 <a id="deepseek-aidsh-federation-hub"></a>
 
@@ -1854,6 +1854,26 @@ export interface JsonRpcConfig {
 Depends on: `Readable` (`node:stream`) · `Writable` (`node:stream`)
 
 Source: [`packages/sdk/server/src/index.ts:25`](../packages/sdk/server/src/index.ts)
+
+<a id="deepseek-aidsh-session-persistence-federation"></a>
+
+## `@deepseek-ai/dsh-session-persistence-federation`
+
+Requires: `sessions`
+
+```ts config-catalog
+/** Plugin config for federation session persistence. */
+export interface Config {
+  /** Directory for local spool files. Required. */
+  spoolRoot: string
+  /** Maximum cold Session preparations retained for history-to-resume reuse. */
+  preparedSessionCacheSize?: number
+  /** Fixed live-event coalescing window; not a backend completion deadline. */
+  writeBatchMaxDelayMs?: number
+}
+```
+
+Source: [`packages/federation/session-persistence-federation/src/index.ts:38`](../packages/federation/session-persistence-federation/src/index.ts)
 
 <a id="deepseek-aidsh-session-persistence-jsonl"></a>
 
