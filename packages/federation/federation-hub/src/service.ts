@@ -24,6 +24,10 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 import {
   isApprovalOutcome,
   roleAllowsCommand,
+  type CapabilityCancelMessage,
+  type CapabilityRequestMessage,
+  type CapabilityResultMessage,
+  type CapabilityStreamMessage,
   type FederationApprovalResultMessage,
   type FederationQuestionResultMessage,
   type FederationSessionLeaseAcquireMessage,
@@ -100,6 +104,14 @@ interface PendingQuestion {
   onAbort: (() => void) | undefined
 }
 
+interface PendingCapabilityRpc {
+  podId: string
+  onStream?: ((chunk: unknown, done?: boolean) => void) | undefined
+  resolve: (res: CapabilityResultMessage) => void
+  reject: (err: Error) => void
+  timer: NodeJS.Timeout
+}
+
 /** Options for {@link FederationHubService}. */
 export interface FederationHubServiceOptions {
   /** Bound (ms) on an approval or question round-trip to the commanding pod. */
@@ -113,12 +125,15 @@ export class FederationHubService extends Service {
   private readonly pods = new Map<string, InternalPodRecord>()
   private readonly delegations = new Map<string, InFlightDelegation>()
   private readonly subscriptions = new Map<string, () => void>()
-  private readonly sendTails = new Map<string, Promise<void>>()
-  private readonly acceptedSends = new Map<string, string>()
   private readonly commanders = new Map<string, string>()
-  private readonly leases = new Map<string, string>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly pendingQuestions = new Map<string, PendingQuestion>()
+  private readonly acceptedSends = new Map<string, string>()
+  private readonly sendTails = new Map<string, Promise<void>>()
+  private readonly leases = new Map<string, string>()
+  private readonly capabilityRequests = new Map<string, PendingCapabilityRpc>()
+  private readonly capabilityStreams = new Map<string, (chunk: unknown, done?: boolean) => void>()
+  private readonly relayedCapabilities = new Map<string, { originPodId: string; targetPodId: string }>()
   private readonly interactionTimeoutMs: number
 
   /**
@@ -366,6 +381,118 @@ export class FederationHubService extends Service {
   }
 
   /**
+   * Execute a capability RPC on a target pod.
+   * @param podId - target pod identifier.
+   * @param request - capability request details without type tag.
+   * @param onStream - optional streaming chunk callback.
+   * @param timeoutMs - timeout in milliseconds.
+   * @returns capability result message.
+   */
+  async rpcToPod(
+    podId: string,
+    request: Omit<CapabilityRequestMessage, 'type'>,
+    onStream?: (chunk: unknown, done?: boolean) => void,
+    timeoutMs: number = 15000,
+  ): Promise<CapabilityResultMessage> {
+    const record = this.pods.get(podId)
+    if (!record || record.info.status !== 'online' || record.socket.readyState !== 1 /* WebSocket.OPEN */) {
+      return {
+        type: 'capability/result',
+        requestId: request.requestId,
+        ok: false,
+        error: {
+          code: 'FS_DISCONNECTED',
+          message: `Target pod "${podId}" is not online or socket is not open`,
+        },
+      }
+    }
+
+    return new Promise<CapabilityResultMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.capabilityRequests.delete(request.requestId)
+        resolve({
+          type: 'capability/result',
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            code: 'TIMEOUT',
+            message: `Capability RPC "${request.seam}/${request.method}" to pod "${podId}" timed out after ${timeoutMs}ms`,
+          },
+        })
+      }, timeoutMs)
+
+      if (onStream) {
+        this.capabilityStreams.set(request.requestId, onStream)
+      }
+
+      this.capabilityRequests.set(request.requestId, {
+        podId,
+        onStream,
+        resolve,
+        reject,
+        timer,
+      })
+
+      const wireMsg: CapabilityRequestMessage = {
+        type: 'capability/request',
+        ...request,
+      }
+
+      try {
+        record.socket.send(JSON.stringify(wireMsg))
+      } catch (err) {
+        clearTimeout(timer)
+        this.capabilityRequests.delete(request.requestId)
+        resolve({
+          type: 'capability/result',
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            code: 'SEND_FAILED',
+            message: err instanceof Error ? err.message : String(err),
+          },
+        })
+      }
+    })
+  }
+
+  /**
+   * Cancel an in-flight capability RPC on a target pod.
+   * @param podId - target pod identifier.
+   * @param requestId - request identifier.
+   */
+  cancelCapabilityRpc(podId: string, requestId: string): void {
+    const record = this.pods.get(podId)
+    if (record && record.socket.readyState === 1) {
+      const cancelMsg: CapabilityCancelMessage = {
+        type: 'capability/cancel',
+        requestId,
+      }
+      try {
+        record.socket.send(JSON.stringify(cancelMsg))
+      } catch {
+        // ignore send error
+      }
+    }
+
+    this.capabilityStreams.delete(requestId)
+    const pending = this.capabilityRequests.get(requestId)
+    if (pending) {
+      clearTimeout(pending.timer)
+      this.capabilityRequests.delete(requestId)
+      pending.resolve({
+        type: 'capability/result',
+        requestId,
+        ok: false,
+        error: {
+          code: 'FS_ABORTED',
+          message: 'Operation was cancelled',
+        },
+      })
+    }
+  }
+
+  /**
    * Process an incoming message received from a pod socket.
    * @param podId - identifier of the sender pod.
    * @param message - parsed wire message.
@@ -597,6 +724,22 @@ export class FederationHubService extends Service {
       }
       case 'question/result': {
         this.settleQuestionResult(podId, message)
+        break
+      }
+      case 'capability/request': {
+        this.handleCapabilityRequest(podId, message)
+        break
+      }
+      case 'capability/result': {
+        this.handleCapabilityResult(podId, message)
+        break
+      }
+      case 'capability/stream': {
+        this.handleCapabilityStream(podId, message)
+        break
+      }
+      case 'capability/cancel': {
+        this.handleCapabilityCancel(podId, message)
         break
       }
       default:
@@ -899,6 +1042,97 @@ export class FederationHubService extends Service {
     ))
   }
 
+  private handleCapabilityRequest(originPodId: string, message: CapabilityRequestMessage): void {
+    const targetPodId = message.targetPodId
+    if (!targetPodId) {
+      this.sendToPod(originPodId, {
+        type: 'capability/result',
+        requestId: message.requestId,
+        ok: false,
+        error: {
+          code: 'INVALID_REQUEST',
+          message: 'Capability request requires a targetPodId',
+        },
+      })
+      return
+    }
+
+    const targetRecord = this.pods.get(targetPodId)
+    if (!targetRecord || targetRecord.info.status !== 'online' || targetRecord.socket.readyState !== 1) {
+      this.sendToPod(originPodId, {
+        type: 'capability/result',
+        requestId: message.requestId,
+        ok: false,
+        error: {
+          code: 'TARGET_OFFLINE',
+          message: `Target pod "${targetPodId}" is offline or unavailable`,
+        },
+      })
+      return
+    }
+
+    this.relayedCapabilities.set(message.requestId, { originPodId, targetPodId })
+    this.sendToPod(targetPodId, message)
+  }
+
+  private handleCapabilityResult(senderPodId: string, message: CapabilityResultMessage): void {
+    const localPending = this.capabilityRequests.get(message.requestId)
+    if (localPending !== undefined) {
+      clearTimeout(localPending.timer)
+      this.capabilityRequests.delete(message.requestId)
+      localPending.resolve(message)
+      return
+    }
+
+    const relayed = this.relayedCapabilities.get(message.requestId)
+    if (relayed !== undefined && relayed.targetPodId === senderPodId) {
+      this.relayedCapabilities.delete(message.requestId)
+      this.sendToPod(relayed.originPodId, message)
+    }
+  }
+
+  private handleCapabilityStream(senderPodId: string, message: CapabilityStreamMessage): void {
+    const streamCb = this.capabilityStreams.get(message.requestId) ?? this.capabilityRequests.get(message.requestId)?.onStream
+    if (streamCb !== undefined) {
+      streamCb(message.chunk, message.done)
+      if (message.done) {
+        this.capabilityStreams.delete(message.requestId)
+      }
+      return
+    }
+
+    const relayed = this.relayedCapabilities.get(message.requestId)
+    if (relayed !== undefined && relayed.targetPodId === senderPodId) {
+      this.sendToPod(relayed.originPodId, message)
+      if (message.done) {
+        this.relayedCapabilities.delete(message.requestId)
+      }
+    }
+  }
+
+  private handleCapabilityCancel(senderPodId: string, message: CapabilityCancelMessage): void {
+    const localPending = this.capabilityRequests.get(message.requestId)
+    if (localPending !== undefined) {
+      clearTimeout(localPending.timer)
+      this.capabilityRequests.delete(message.requestId)
+      localPending.resolve({
+        type: 'capability/result',
+        requestId: message.requestId,
+        ok: false,
+        error: {
+          code: 'FS_ABORTED',
+          message: 'Operation was cancelled',
+        },
+      })
+      return
+    }
+
+    const relayed = this.relayedCapabilities.get(message.requestId)
+    if (relayed !== undefined && relayed.originPodId === senderPodId) {
+      this.sendToPod(relayed.targetPodId, message)
+    }
+  }
+
   private isAnswerItems(value: unknown): value is AskUserQuestionAnswerItem[] {
     return Array.isArray(value) && value.length > 0 && value.every((item) => {
       if (typeof item !== 'object' || item === null) return false
@@ -910,6 +1144,37 @@ export class FederationHubService extends Service {
   }
 
   private failPendingForPod(podId: string): void {
+    for (const [requestId, pending] of [...this.capabilityRequests.entries()]) {
+      if (pending.podId === podId) {
+        clearTimeout(pending.timer)
+        this.capabilityRequests.delete(requestId)
+        pending.resolve({
+          type: 'capability/result',
+          requestId,
+          ok: false,
+          error: {
+            code: 'POD_OFFLINE',
+            message: `Target pod "${podId}" went offline`,
+          },
+        })
+      }
+    }
+    for (const [requestId, relayed] of [...this.relayedCapabilities.entries()]) {
+      if (relayed.targetPodId === podId) {
+        this.relayedCapabilities.delete(requestId)
+        this.sendToPod(relayed.originPodId, {
+          type: 'capability/result',
+          requestId,
+          ok: false,
+          error: {
+            code: 'TARGET_OFFLINE',
+            message: `Target pod "${podId}" went offline during execution`,
+          },
+        })
+      } else if (relayed.originPodId === podId) {
+        this.relayedCapabilities.delete(requestId)
+      }
+    }
     for (const pending of [...this.pendingApprovals.values()]) {
       if (pending.podId === podId) pending.settle('unavailable')
     }
@@ -924,6 +1189,20 @@ export class FederationHubService extends Service {
   }
 
   private failAllPending(): void {
+    for (const [requestId, pending] of this.capabilityRequests) {
+      clearTimeout(pending.timer)
+      pending.resolve({
+        type: 'capability/result',
+        requestId,
+        ok: false,
+        error: {
+          code: 'HUB_DISPOSED',
+          message: 'Federation hub was disposed',
+        },
+      })
+    }
+    this.capabilityRequests.clear()
+    this.relayedCapabilities.clear()
     for (const pending of [...this.pendingApprovals.values()]) pending.settle('unavailable')
     for (const pending of [...this.pendingQuestions.values()]) {
       pending.reject(new UserQuestionError(

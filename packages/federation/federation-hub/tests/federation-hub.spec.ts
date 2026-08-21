@@ -22,7 +22,7 @@ import {
   type FederationWireMessage,
 } from '../src/index.ts'
 
-function createFakeSocket(): { socket: WebSocket; send: ReturnType<typeof vi.fn> } {
+function createFakeSocket(): { socket: WebSocket & { readyState: number }; send: ReturnType<typeof vi.fn> } {
   const send = vi.fn()
   const close = vi.fn()
   const terminate = vi.fn()
@@ -31,7 +31,7 @@ function createFakeSocket(): { socket: WebSocket; send: ReturnType<typeof vi.fn>
     send,
     close,
     terminate,
-  } as unknown as WebSocket
+  } as unknown as WebSocket & { readyState: number }
   return { socket, send }
 }
 

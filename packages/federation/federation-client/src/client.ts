@@ -7,13 +7,34 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { WebSocket } from 'ws'
 import type { Context } from '@deepseek-ai/cordis'
+import {
+  FileSystem,
+  FsError,
+  type FsEditRequest,
+  type FsTarget,
+  type FsVersion,
+  type FsWriteIntent,
+} from '@deepseek-ai/dsh-fs'
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+import {
+  SubprocessRuntime,
+  type SubprocessHandle,
+  type SubprocessOutcome,
+  type SubprocessSpawnSpec,
+  type SubprocessTerminalHandle,
+  type SubprocessTerminalSignal,
+  type SubprocessTerminalSpawnSpec,
+} from '@deepseek-ai/dsh-subprocess'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {
+  CapabilityRequestPayload,
+  CapabilityResult,
   DelegatedTaskExecutor,
   FederationApprovalCancelPayload,
   FederationApprovalRequestPayload,
@@ -125,6 +146,12 @@ interface PendingLease {
   timer: NodeJS.Timeout
 }
 
+interface PendingCapability {
+  resolve: (result: CapabilityResult) => void
+  onStream?: ((chunk: unknown, done?: boolean) => void) | undefined
+  timer: NodeJS.Timeout
+}
+
 /**
  * Safely converts WebSocket raw data into a string.
  * @param data - Raw data payload from WebSocket.
@@ -168,6 +195,10 @@ export class FederationPodClient {
   private readonly pendingLeases = new Map<string, PendingLease>()
   private readonly pendingApprovals = new Map<string, AbortController>()
   private readonly pendingQuestions = new Map<string, AbortController>()
+  private readonly pendingCapabilities = new Map<string, PendingCapability>()
+  private readonly activeCapabilityStreams = new Map<string, (chunk: unknown, done?: boolean) => void>()
+  private readonly activeCapabilityTasks = new Map<string, AbortController>()
+  private readonly activeSubprocesses = new Map<string, SubprocessHandle | SubprocessTerminalHandle>()
 
   constructor(
     private readonly ctx: Context,
@@ -367,6 +398,60 @@ export class FederationPodClient {
     })
   }
 
+  /**
+   * Execute a capability RPC on the central hub or a target pod.
+   * @param req - capability request details without type tag.
+   * @param onStream - optional streaming chunk callback.
+   * @param timeoutMs - request timeout in milliseconds.
+   * @returns capability result.
+   */
+  async rpcCapability(
+    req: Omit<CapabilityRequestPayload, 'type'>,
+    onStream?: (chunk: unknown, done?: boolean) => void,
+    timeoutMs?: number,
+  ): Promise<CapabilityResult> {
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return { ok: false, code: 'disconnected', message: 'Client is not connected to federation hub' }
+    }
+    if (onStream) {
+      this.activeCapabilityStreams.set(req.requestId, onStream)
+    }
+
+    const timeout = timeoutMs ?? this.config.requestTimeoutMs ?? 15000
+    return new Promise<CapabilityResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingCapabilities.delete(req.requestId)
+        resolve({ ok: false, code: 'timeout', message: 'Capability RPC timed out' })
+      }, timeout)
+
+      this.pendingCapabilities.set(req.requestId, { resolve, onStream, timer })
+      this.sendMessage({
+        type: 'capability/request',
+        ...req,
+      })
+    })
+  }
+
+  /**
+   * Cancel an in-flight capability RPC.
+   * @param requestId - request identifier.
+   */
+  cancelCapabilityRpc(requestId: string): void {
+    this.activeCapabilityStreams.delete(requestId)
+    if (this.status === 'connected' && this.socket?.readyState === WebSocket.OPEN) {
+      this.sendMessage({
+        type: 'capability/cancel',
+        requestId,
+      })
+    }
+    const pending = this.pendingCapabilities.get(requestId)
+    if (pending) {
+      clearTimeout(pending.timer)
+      this.pendingCapabilities.delete(requestId)
+      pending.resolve({ ok: false, code: 'FS_ABORTED', message: 'Operation was cancelled' })
+    }
+  }
+
   private resolveToken(): string | undefined {
     if (this.config.token) return this.config.token
     if (this.config.tokenEnv && this.config.tokenEnv.length > 0) {
@@ -377,6 +462,9 @@ export class FederationPodClient {
 
   private connect(): void {
     if (this.disposed) return
+    if (this.socket && (this.socket.readyState === WebSocket.CONNECTING || this.socket.readyState === WebSocket.OPEN)) {
+      return
+    }
     this.status = 'connecting'
 
     const headers: Record<string, string> = {}
@@ -386,50 +474,37 @@ export class FederationPodClient {
     }
 
     try {
-      const socket = new WebSocket(this.config.endpoint, { headers })
-      this.socket = socket
+      this.socket = new WebSocket(this.config.endpoint, { headers })
 
-      socket.on('open', () => {
-        if (this.disposed || this.socket !== socket) return
-        this.status = 'connected'
-        this.currentReconnectDelay = this.config.reconnectDelayMs ?? 2000
-        this.register()
+      this.socket.on('open', () => {
+        this.onSocketOpen()
       })
 
-      socket.on('message', (data: WebSocket.RawData) => {
-        if (this.disposed || this.socket !== socket) return
-        void (async () => {
-          try {
-            const raw = rawDataToString(data)
-            const parsed = JSON.parse(raw) as FederationClientWireMessage
-            await this.handleMessage(parsed)
-          } catch (err: unknown) {
-            this.ctx.logger.warn(`federation-client: invalid message: ${String(err)}`)
-          }
-        })()
+      this.socket.on('message', (data: WebSocket.RawData) => {
+        this.onSocketMessage(data)
       })
 
-      socket.on('close', () => {
-        if (this.socket === socket) {
-          this.handleSocketClose()
-        }
+      this.socket.on('close', () => {
+        this.onSocketClose()
       })
 
-      socket.on('error', (err: Error) => {
-        this.ctx.logger.warn(`federation-client socket error: ${err.message}`)
-        if (this.socket === socket) {
-          socket.terminate()
-        }
+      this.socket.on('error', (_err: Error) => {
+        // Socket error handled in onSocketClose
       })
-    } catch (err: unknown) {
-      this.ctx.logger.warn(`federation-client connect failed: ${String(err)}`)
-      this.scheduleReconnect()
+    } catch {
+      this.onSocketClose()
     }
   }
 
-  private handleSocketClose(): void {
-    this.socket = undefined
+  private onSocketOpen(): void {
+    this.status = 'connected'
+    this.currentReconnectDelay = this.config.reconnectDelayMs ?? 2000
+    this.register()
+  }
+
+  private onSocketClose(): void {
     this.status = 'disconnected'
+    this.socket = undefined
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
@@ -437,6 +512,7 @@ export class FederationPodClient {
     this.rejectPendingSends('federation client is not connected')
     this.rejectPendingPersists('federation client is not connected')
     this.rejectPendingLeases('federation client is not connected')
+    this.rejectPendingCapabilities('federation client is not connected')
     this.abortPendingInteractions()
     this.scheduleReconnect()
   }
@@ -462,6 +538,15 @@ export class FederationPodClient {
       clearTimeout(pending.timer)
       pending.resolve({ ok: false, code: 'disconnected', message })
       this.pendingLeases.delete(id)
+    }
+  }
+
+  private rejectPendingCapabilities(message: string): void {
+    this.activeCapabilityStreams.clear()
+    for (const [id, pending] of this.pendingCapabilities) {
+      clearTimeout(pending.timer)
+      pending.resolve({ ok: false, code: 'FS_DISCONNECTED', message })
+      this.pendingCapabilities.delete(id)
     }
   }
 
@@ -504,6 +589,19 @@ export class FederationPodClient {
         })
       }
     }, interval)
+  }
+
+  private onSocketMessage(data: WebSocket.RawData): void {
+    if (this.disposed) return
+    void (async () => {
+      try {
+        const raw = rawDataToString(data)
+        const parsed = JSON.parse(raw) as FederationClientWireMessage
+        await this.handleMessage(parsed)
+      } catch (err: unknown) {
+        this.ctx.logger.warn(`federation-client: invalid message: ${String(err)}`)
+      }
+    })()
   }
 
   private async handleMessage(msg: FederationClientWireMessage): Promise<void> {
@@ -598,6 +696,44 @@ export class FederationPodClient {
         })
         break
       }
+      case 'capability/result': {
+        const pending = this.pendingCapabilities.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingCapabilities.delete(msg.requestId)
+        if (msg.ok) {
+          pending.resolve({ ok: true, value: msg.value })
+        } else {
+          pending.resolve({
+            ok: false,
+            ...msg.error?.code !== undefined ? { code: msg.error.code } : {},
+            message: msg.error?.message ?? 'Capability RPC failed',
+          })
+        }
+        break
+      }
+      case 'capability/stream': {
+        const streamHandler = this.activeCapabilityStreams.get(msg.requestId) ?? this.pendingCapabilities.get(msg.requestId)?.onStream
+        if (streamHandler !== undefined) {
+          streamHandler(msg.chunk, msg.done)
+          if (msg.done) {
+            this.activeCapabilityStreams.delete(msg.requestId)
+          }
+        }
+        break
+      }
+      case 'capability/request': {
+        void this.handleCapabilityRequest(msg)
+        break
+      }
+      case 'capability/cancel': {
+        const controller = this.activeCapabilityTasks.get(msg.requestId)
+        if (controller) {
+          controller.abort('cancelled by hub')
+          this.activeCapabilityTasks.delete(msg.requestId)
+        }
+        break
+      }
       default:
         break
     }
@@ -618,6 +754,286 @@ export class FederationPodClient {
     this.pendingApprovals.clear()
     for (const controller of this.pendingQuestions.values()) controller.abort('federation client disposed')
     this.pendingQuestions.clear()
+    for (const controller of this.activeCapabilityTasks.values()) controller.abort('federation client disposed')
+    this.activeCapabilityTasks.clear()
+  }
+
+  private async handleCapabilityRequest(msg: CapabilityRequestPayload): Promise<void> {
+    const controller = new AbortController()
+    this.activeCapabilityTasks.set(msg.requestId, controller)
+    try {
+      if (msg.seam === 'fs') {
+        const fsService = this.ctx.fs as FileSystem | undefined
+        if (!fsService) {
+          throw new Error('Filesystem service (ctx.fs) is not available on this pod')
+        }
+        const result = await this.dispatchFsMethod(fsService, msg.method, msg.args, controller.signal, msg.requestId)
+        if (!this.disposed) {
+          this.sendMessage({
+            type: 'capability/result',
+            requestId: msg.requestId,
+            ok: true,
+            value: result,
+          })
+        }
+      } else {
+        const subprocessService = this.ctx.subprocess as SubprocessRuntime | undefined
+        if (!subprocessService) {
+          throw new Error('Subprocess service (ctx.subprocess) is not available on this pod')
+        }
+        const result = await this.dispatchSubprocessMethod(subprocessService, msg.method, msg.args, controller.signal, msg.requestId)
+        if (!this.disposed) {
+          this.sendMessage({
+            type: 'capability/result',
+            requestId: msg.requestId,
+            ok: true,
+            value: result,
+          })
+        }
+      }
+    } catch (err: unknown) {
+      if (!this.disposed) {
+        if (err instanceof FsError) {
+          this.sendMessage({
+            type: 'capability/result',
+            requestId: msg.requestId,
+            ok: false,
+            error: {
+              code: err.code,
+              message: err.message,
+            },
+          })
+        } else {
+          this.sendMessage({
+            type: 'capability/result',
+            requestId: msg.requestId,
+            ok: false,
+            error: {
+              message: err instanceof Error ? err.message : String(err),
+            },
+          })
+        }
+      }
+    } finally {
+      this.activeCapabilityTasks.delete(msg.requestId)
+    }
+  }
+
+  private async dispatchFsMethod(
+    fs: FileSystem,
+    method: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+    requestId: string,
+  ): Promise<unknown> {
+    switch (method) {
+      case 'resolve':
+        return await fs.resolve(args.path as string, { ...(args.cwd !== undefined ? { cwd: args.cwd as string } : {}), signal })
+      case 'processPath':
+        return fs.processPath(args.target as FsTarget)
+      case 'fileUrl':
+        return fs.fileUrl(args.target as FsTarget)
+      case 'contains':
+        return fs.contains(args.parent as FsTarget, args.child as FsTarget)
+      case 'stat':
+        return await fs.stat(args.target as FsTarget, signal)
+      case 'lstat':
+        return await fs.lstat(args.path as string, args.cwd !== undefined ? { cwd: args.cwd as string } : undefined, signal)
+      case 'readText':
+        return await fs.readText(args.target as FsTarget, signal)
+      case 'streamText': {
+        let seq = 0
+        const iterable = await fs.streamText(args.target as FsTarget, signal)
+        for await (const chunk of iterable) {
+          this.sendMessage({
+            type: 'capability/stream',
+            requestId,
+            seq: seq++,
+            chunk,
+          })
+        }
+        return { streamed: true }
+      }
+      case 'readBytes': {
+        const bytes = await fs.readBytes(args.target as FsTarget, signal, args.maxBytes as number)
+        return { base64: Buffer.from(bytes).toString('base64') }
+      }
+      case 'listDir':
+        return await fs.listDir(args.target as FsTarget, signal)
+      case 'writeText':
+        return await fs.writeText(
+          args.target as FsTarget,
+          args.content as string,
+          args.expected as FsWriteIntent | undefined,
+          signal,
+          args.sandboxPolicy as SandboxExecutionPolicy | undefined,
+        )
+      case 'editText':
+        return await fs.editText(
+          args.target as FsTarget,
+          args.edit as FsEditRequest,
+          args.expected as { version: FsVersion } | undefined,
+          signal,
+          args.sandboxPolicy as SandboxExecutionPolicy | undefined,
+        )
+      default:
+        throw new Error(`Unknown filesystem method: "${method}"`)
+    }
+  }
+
+  private async dispatchSubprocessMethod(
+    subprocess: SubprocessRuntime,
+    method: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+    requestId: string,
+  ): Promise<unknown> {
+    switch (method) {
+      case 'resolveExecutable': {
+        const env = (args.options as { env?: Record<string, string> } | undefined)?.env
+        return await subprocess.resolveExecutable(args.command as string, env, signal)
+      }
+      case 'spawn': {
+        const handle = subprocess.spawn(args.request as SubprocessSpawnSpec)
+        const handleId = randomUUID()
+        this.activeSubprocesses.set(handleId, handle)
+
+        if (handle.stdout) {
+          handle.stdout.on('data', (data: Buffer) => {
+            this.sendMessage({
+              type: 'capability/stream',
+              requestId,
+              seq: 0,
+              chunk: { stream: 'stdout', data: data.toString('utf-8') },
+            })
+          })
+        }
+        if (handle.stderr) {
+          handle.stderr.on('data', (data: Buffer) => {
+            this.sendMessage({
+              type: 'capability/stream',
+              requestId,
+              seq: 0,
+              chunk: { stream: 'stderr', data: data.toString('utf-8') },
+            })
+          })
+        }
+
+        void handle.done.then((outcome: SubprocessOutcome) => {
+          let stdoutData: string | undefined
+          let stderrData: string | undefined
+          if (handle.collected.stdout) {
+            stdoutData = handle.collected.stdout.readFrom(0).text
+          }
+          if (handle.collected.stderr) {
+            stderrData = handle.collected.stderr.readFrom(0).text
+          }
+          if (stdoutData) {
+            this.sendMessage({
+              type: 'capability/stream',
+              requestId,
+              seq: 1,
+              chunk: { stream: 'stdout', data: stdoutData },
+            })
+          }
+          if (stderrData) {
+            this.sendMessage({
+              type: 'capability/stream',
+              requestId,
+              seq: 2,
+              chunk: { stream: 'stderr', data: stderrData },
+            })
+          }
+          this.sendMessage({
+            type: 'capability/stream',
+            requestId,
+            seq: 3,
+            chunk: { type: 'exit', outcome },
+            done: true,
+          })
+          this.activeSubprocesses.delete(handleId)
+        })
+        return { handleId, pid: handle.pid }
+      }
+      case 'terminate': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const handle = this.activeSubprocesses.get(handleId) as SubprocessHandle | undefined
+        if (!handle) throw new Error(`Process handle "${handleId}" not found`)
+        handle.terminate()
+        return { ok: true }
+      }
+      case 'waitForExit': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const handle = this.activeSubprocesses.get(handleId) as SubprocessHandle | undefined
+        if (!handle) throw new Error(`Process handle "${handleId}" not found`)
+        const outcome = await handle.waitForExit()
+        return { outcome }
+      }
+      case 'readFrom': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const handle = this.activeSubprocesses.get(handleId) as SubprocessHandle | undefined
+        if (!handle) throw new Error(`Process handle "${handleId}" not found`)
+        const streamName = typeof args.stream === 'string' ? args.stream : 'stdout'
+        const reader = streamName === 'stderr' ? handle.collected.stderr : handle.collected.stdout
+        if (!reader) throw new Error(`No collected reader for stream "${streamName}"`)
+        const slice = reader.readFrom(args.offset as number)
+        return { slice }
+      }
+      case 'writeStdin': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const handle = this.activeSubprocesses.get(handleId) as SubprocessHandle | undefined
+        if (!handle) throw new Error(`Process handle "${handleId}" not found`)
+        handle.stdin?.write(typeof args.data === 'string' ? args.data : '')
+        return { ok: true }
+      }
+      case 'spawnTerminal': {
+        const terminal = await subprocess.spawnTerminal(args.request as SubprocessTerminalSpawnSpec)
+        const handleId = randomUUID()
+        this.activeSubprocesses.set(handleId, terminal)
+        void terminal.done.then(() => {
+          this.sendMessage({
+            type: 'capability/stream',
+            requestId,
+            seq: 1,
+            chunk: { type: 'terminal-exit' },
+            done: true,
+          })
+          this.activeSubprocesses.delete(handleId)
+        })
+        return { handleId, pid: terminal.pid }
+      }
+      case 'writeTerminal': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const terminal = this.activeSubprocesses.get(handleId) as SubprocessTerminalHandle | undefined
+        if (!terminal) throw new Error(`Terminal handle "${handleId}" not found`)
+        await terminal.write(typeof args.data === 'string' ? args.data : '')
+        return { ok: true }
+      }
+      case 'inspectForeground': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const terminal = this.activeSubprocesses.get(handleId) as SubprocessTerminalHandle | undefined
+        if (!terminal) throw new Error(`Terminal handle "${handleId}" not found`)
+        const info = await terminal.inspectForeground()
+        return { info }
+      }
+      case 'signalForeground': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const terminal = this.activeSubprocesses.get(handleId) as SubprocessTerminalHandle | undefined
+        if (!terminal) throw new Error(`Terminal handle "${handleId}" not found`)
+        const signalName = (args.signal as SubprocessTerminalSignal | undefined) ?? 'SIGINT'
+        await terminal.signalForeground(signalName)
+        return { ok: true }
+      }
+      case 'terminateTerminal': {
+        const handleId = typeof args.handleId === 'string' ? args.handleId : ''
+        const terminal = this.activeSubprocesses.get(handleId) as SubprocessTerminalHandle | undefined
+        if (!terminal) throw new Error(`Terminal handle "${handleId}" not found`)
+        await terminal.terminate()
+        return { ok: true }
+      }
+      default:
+        throw new Error(`Unknown subprocess method: "${method}"`)
+    }
   }
 
   private async handleApprovalRequest(msg: FederationApprovalRequestPayload): Promise<void> {

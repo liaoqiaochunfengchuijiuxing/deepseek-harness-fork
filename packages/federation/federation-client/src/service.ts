@@ -9,7 +9,14 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { FederationPodClient } from './client.ts'
-import type { PodConnectionStatus, SessionLeaseResult, SessionPersistResult, SessionSendResult } from './types.ts'
+import type {
+  CapabilityRequestPayload,
+  CapabilityResult,
+  PodConnectionStatus,
+  SessionLeaseResult,
+  SessionPersistResult,
+  SessionSendResult,
+} from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -93,5 +100,28 @@ export class FederationClientService extends Service {
     sessionId: SessionId,
   ): Promise<SessionLeaseResult> {
     return this.client.leaseSession(action, sessionId)
+  }
+
+  /**
+   * Execute a capability RPC on the central hub or a target pod.
+   * @param request - capability request without type tag.
+   * @param onStream - optional streaming chunk callback.
+   * @param timeoutMs - request timeout in milliseconds.
+   * @returns capability result.
+   */
+  rpcCapability(
+    request: Omit<CapabilityRequestPayload, 'type'>,
+    onStream?: (chunk: unknown, done?: boolean) => void,
+    timeoutMs?: number,
+  ): Promise<CapabilityResult> {
+    return this.client.rpcCapability(request, onStream, timeoutMs)
+  }
+
+  /**
+   * Cancel an in-flight capability RPC.
+   * @param requestId - request identifier.
+   */
+  cancelCapabilityRpc(requestId: string): void {
+    this.client.cancelCapabilityRpc(requestId)
   }
 }

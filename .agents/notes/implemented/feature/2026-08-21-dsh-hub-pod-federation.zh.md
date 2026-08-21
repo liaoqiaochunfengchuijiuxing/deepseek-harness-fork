@@ -122,7 +122,9 @@ v0、v1、v2 与 v3 已在树中：
 
 持有 command 能力的 pod 按到达顺序把 `session/send` 送进活着的写者节点 inbox，并用 `clientMessageId` 幂等；没有活 agent 时以 `writer-offline` 失败。一次成功的发送把该 pod 记为指挥者：该会话上的 hub `approval/request` 与 `ctx.userQuestions.ask` 经该连接转发，没有应答者时 fail-closed。在途断线绝不自动批准；被替换 socket 的过期 close 不会把后继连接标成离线；在途重复的审批 `requestId` 会合并。
 
-漫游 pod 把 `dsh-session-persistence-federation` 挂为 `ctx.sessionPersistence`：append 先在本地 JSON spool 落盘，再按单调 seq 续传上传。hub 把 `session/persist` 写入现有的 JSONL 或 SQLite 后端；租约存在 `FederationHubService` 的内存表里。`prepare` 在客户端已连接时获取写者租约；租约被其他 pod 持有时以 stale-writer 失败；pod 离线会释放其租约。`/fork_to_local` 把 hub 日志复制进本地持久化，且 `deriveMessages()` 一致；未知必读事件类型与外版本格式会被拒绝。`/push_to_hub` 上传本地日志。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。remote subagent start 可以带 `targetPodId`；hub 经目标 pod 的既有连接中继该 run。remote fs/subprocess provider 与 pod 直连传输仍未在树中。
+漫游 pod 把 `dsh-session-persistence-federation` 挂为 `ctx.sessionPersistence`：append 先在本地 JSON spool 落盘，再按单调 seq 续传上传。hub 把 `session/persist` 写入现有的 JSONL 或 SQLite 后端；租约存在 `FederationHubService` 的内存表里。`prepare` 在客户端已连接时获取写者租约；租约被其他 pod 持有时以 stale-writer 失败；pod 离线会释放其租约。`/fork_to_local` 把 hub 日志复制进本地持久化，且 `deriveMessages()` 一致；未知必读事件类型与外版本格式会被拒绝。`/push_to_hub` 上传本地日志。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。remote subagent start 可以带 `targetPodId`；hub 经目标 pod 的既有连接中继该 run。
+
+远程能力提供方 `dsh-fs-federation` 与 `dsh-subprocess-federation` 通过联邦 WebSocket 传输协议将 `ctx.fs` 与 `ctx.subprocess` 调用委托给目标节点。在 Cloud Hub 模式下，中央 hub 在边缘 worker pod 上执行文件与 bash 工具；在 Peer 模式下，pod 跨节点路由操作。二进制文件通过 Base64 传输，子进程 stdout/stderr 实时流式传输。pod 直连传输仍未在树中。
 
 ## Testing
 
@@ -133,6 +135,7 @@ v0、v1、v2 与 v3 已在树中：
 - T3.3：`packages/federation/federation-hub/tests/federation-e2e-m3.spec.ts` 把命令送进写者 inbox、把审批路由到指挥 pod 且不自动批准、在途断线将未决审批 fail-closed，并在重连后用同一 `clientMessageId` 幂等重发。client spec 合并在途重复的 `requestId`。
 - M4：`packages/federation/session-persistence-federation/tests/session-persistence-federation.spec.ts` 在 hub 上传失败时仍本地 append、重试未确认前缀，并拒绝未知必读事件。hub persist/lease 单测跳过已存 seq、拒绝 stale-writer，并在离线时释放租约。`packages/federation/federation-hub/tests/federation-e2e-m4.spec.ts` 上传 spool 批次、强制活租约、fork 后 derived messages 一致，并断言 persist 载荷不含凭据。
 - T5.1：`packages/federation/federation-hub/tests/federation-e2e-m5.spec.ts` 用 `targetPodId` 指向 `pod-b`，不会在第一台在线 pod 上执行。hub 单测在一对已连接 pod 上中继 chunk/stop/abort。
+- T5.2：`packages/federation/federation-hub/tests/federation-e2e-t52.spec.ts` 在真实 WebSocket 上执行远程文件系统（`resolve`、`writeText`、`stat`、`readText`、`streamText`、`editText`、`readBytes`、`listDir`）与子进程（`resolveExecutable`、带 stdout 收集的 `spawn`、环境过滤）操作。`fs-federation` 与 `subprocess-federation` 的单测保证单文件 100% 覆盖率。
 
 ## Risks
 

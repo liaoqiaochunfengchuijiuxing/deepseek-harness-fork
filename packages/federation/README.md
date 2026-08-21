@@ -10,5 +10,7 @@ This family implements the hub-and-pod federation capability for DeepSeek Harnes
 | [`federation-client/`](federation-client/README.md) | Data-plane client plugin: outbound connection, capability declaration, subagent execution | registers on `ctx.federationClient` |
 | [`session-source-federation/`](session-source-federation/README.md) | Remote session source: list, search, inspect, and subscribe to hub sessions | registers on `ctx.sessionSources` |
 | [`session-persistence-federation/`](session-persistence-federation/README.md) | Local-first session persistence: JSON spool plus async upload to the hub writer store | registers on `ctx.sessionPersistence` |
+| [`fs-federation/`](fs-federation/README.md) | Remote `FileSystem` provider: delegate filesystem operations to a target pod over federation WS | `ctx.fs` |
+| [`subprocess-federation/`](subprocess-federation/README.md) | Remote `SubprocessRuntime` provider: delegate process and terminal execution to a target pod | `ctx.subprocess` |
 
 Design rationale and topology details are documented in the [hub-and-pod federation Agent Note](../../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.md).

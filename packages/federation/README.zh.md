@@ -10,5 +10,7 @@
 | [`federation-client/`](federation-client/README.md) | 数据面客户端插件：外拨连接、能力声明、委派执行 | 注册到 `ctx.federationClient` |
 | [`session-source-federation/`](session-source-federation/README.md) | 远端会话源：列出、搜索、检查并订阅 hub 会话 | 注册到 `ctx.sessionSources` |
 | [`session-persistence-federation/`](session-persistence-federation/README.md) | 本地优先会话持久化：JSON spool 加异步上传到 hub 写者存储 | 注册到 `ctx.sessionPersistence` |
+| [`fs-federation/`](fs-federation/README.md) | 远程 `FileSystem` 提供者：通过联邦 WS 将文件系统操作委托给目标节点 | `ctx.fs` |
+| [`subprocess-federation/`](subprocess-federation/README.md) | 远程 `SubprocessRuntime` 提供者：将子进程与终端执行委托给目标节点 | `ctx.subprocess` |
 
 设计依据与拓扑细节参见 [hub-pod 联邦 Agent Note](../../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.md)。

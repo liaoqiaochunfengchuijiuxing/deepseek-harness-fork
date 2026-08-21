@@ -834,6 +834,22 @@ export interface Config {
 
 Source: [`packages/context/file-reference-local/src/index.ts:35`](../packages/context/file-reference-local/src/index.ts)
 
+<a id="deepseek-aidsh-fs-federation"></a>
+
+## `@deepseek-ai/dsh-fs-federation`
+
+```ts config-catalog
+/** Configuration for remote federation filesystem provider. */
+export interface Config {
+  /** Target pod identifier to route filesystem operations to. */
+  targetPodId: string
+  /** RPC request timeout in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+Source: [`packages/federation/fs-federation/src/index.ts:35`](../packages/federation/fs-federation/src/index.ts)
+
 <a id="deepseek-aidsh-fs-local"></a>
 
 ## `@deepseek-ai/dsh-fs-local`
@@ -2622,6 +2638,22 @@ export interface Config {
 ```
 
 Source: [`packages/e2b/subprocess-e2b/src/index.ts:25`](../packages/e2b/subprocess-e2b/src/index.ts)
+
+<a id="deepseek-aidsh-subprocess-federation"></a>
+
+## `@deepseek-ai/dsh-subprocess-federation`
+
+```ts config-catalog
+/** Configuration for remote federation subprocess provider. */
+export interface Config {
+  /** Target pod identifier to route subprocess operations to. */
+  targetPodId: string
+  /** RPC request timeout in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+Source: [`packages/federation/subprocess-federation/src/index.ts:34`](../packages/federation/subprocess-federation/src/index.ts)
 
 <a id="deepseek-aidsh-system-prompt"></a>
 

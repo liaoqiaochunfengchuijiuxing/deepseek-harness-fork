@@ -43,8 +43,8 @@
 ## M5 peer 与细粒度（v4，可选）
 
 - [x] T5.1 hub 中继 pod↔pod
-- [ ] T5.2 capability-server 粒度（remote fs/subprocess）— **下一个任务**；实现未开工，按 [HANDOFF.md](HANDOFF.md) 从包骨架开始
-- [ ] T5.3 直连优化
+- [x] T5.2 capability-server 粒度（remote fs/subprocess）
+- [ ] T5.3 直连优化 — **下一个任务**；按 [HANDOFF.md](HANDOFF.md) 开工
 
 ## 完成定义（里程碑级）
 

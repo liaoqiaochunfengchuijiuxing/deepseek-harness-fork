@@ -476,6 +476,46 @@ export interface FederationSessionLeaseResultMessage {
   error?: string
 }
 
+/** Target seam for capability delegation. */
+export type CapabilitySeam = 'fs' | 'subprocess'
+
+/** Capability RPC request message sent between nodes. */
+export interface CapabilityRequestMessage {
+  type: 'capability/request'
+  requestId: string
+  targetPodId?: string
+  seam: CapabilitySeam
+  method: string
+  args: Record<string, unknown>
+}
+
+/** Capability RPC response result message. */
+export interface CapabilityResultMessage {
+  type: 'capability/result'
+  requestId: string
+  ok: boolean
+  value?: unknown
+  error?: {
+    code?: string
+    message: string
+  }
+}
+
+/** Capability stream chunk message for streaming reads / process pipes / terminal output. */
+export interface CapabilityStreamMessage {
+  type: 'capability/stream'
+  requestId: string
+  seq: number
+  chunk: unknown
+  done?: boolean
+}
+
+/** Capability cancel request message to abort in-flight remote operation. */
+export interface CapabilityCancelMessage {
+  type: 'capability/cancel'
+  requestId: string
+}
+
 /** Union of all messages sent over the federation WebSocket connection. */
 export type FederationWireMessage =
   | FederationRegisterMessage
@@ -511,3 +551,7 @@ export type FederationWireMessage =
   | FederationSessionLeaseAcquireMessage
   | FederationSessionLeaseReleaseMessage
   | FederationSessionLeaseResultMessage
+  | CapabilityRequestMessage
+  | CapabilityResultMessage
+  | CapabilityStreamMessage
+  | CapabilityCancelMessage

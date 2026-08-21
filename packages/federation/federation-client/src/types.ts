@@ -308,6 +308,51 @@ export type SessionLeaseResult =
   | { ok: true; holder: string }
   | { ok: false; code: 'disconnected' | 'timeout' | 'unauthorized' | 'stale-writer' | 'invalid'; message: string }
 
+/** Target seam for capability delegation. */
+export type CapabilitySeam = 'fs' | 'subprocess'
+
+/** Capability RPC request message sent between nodes. */
+export interface CapabilityRequestPayload {
+  type: 'capability/request'
+  requestId: string
+  targetPodId?: string
+  seam: CapabilitySeam
+  method: string
+  args: Record<string, unknown>
+}
+
+/** Capability RPC response result message. */
+export interface CapabilityResultPayload {
+  type: 'capability/result'
+  requestId: string
+  ok: boolean
+  value?: unknown
+  error?: {
+    code?: string
+    message: string
+  }
+}
+
+/** Capability stream chunk message for streaming reads / process pipes / terminal output. */
+export interface CapabilityStreamPayload {
+  type: 'capability/stream'
+  requestId: string
+  seq: number
+  chunk: unknown
+  done?: boolean
+}
+
+/** Capability cancel request message to abort in-flight remote operation. */
+export interface CapabilityCancelPayload {
+  type: 'capability/cancel'
+  requestId: string
+}
+
+/** Outcome of a capability RPC. */
+export type CapabilityResult =
+  | { ok: true; value?: unknown }
+  | { ok: false; code?: string; message: string }
+
 /** Incoming or outgoing wire message union on client side. */
 export type FederationClientWireMessage =
   | FederationRegisterPayload
@@ -330,6 +375,10 @@ export type FederationClientWireMessage =
   | FederationSessionPersistResultPayload
   | FederationSessionLeasePayload
   | FederationSessionLeaseResultPayload
+  | CapabilityRequestPayload
+  | CapabilityResultPayload
+  | CapabilityStreamPayload
+  | CapabilityCancelPayload
 
 /** Custom execution handler signature for executing delegated tasks. */
 export type DelegatedTaskExecutor = (

@@ -58,7 +58,7 @@ describe('FederationSessionPersistence', () => {
   })
 
   it('uploads events asynchronously after local durability', async () => {
-    const persistFn = vi.fn(async (_id, events: SessionEvent[]) => ({
+    const persistFn = vi.fn(async (_id: SessionId, events: SessionEvent[], _header?: SessionHeader) => ({
       ok: true as const,
       lastSeq: events[events.length - 1]?.seq ?? 0,
     }))
@@ -69,7 +69,7 @@ describe('FederationSessionPersistence', () => {
     await vi.waitFor(() => {
       expect(persistFn).toHaveBeenCalled()
     })
-    const [, events, uploadedHeader] = persistFn.mock.calls[0] as [SessionId, SessionEvent[], SessionHeader]
+    const [, events, uploadedHeader] = persistFn.mock.calls[0] as unknown as [SessionId, SessionEvent[], SessionHeader]
     expect(events.length).toBeGreaterThan(0)
     expect(uploadedHeader.id).toBe(header.id)
   })

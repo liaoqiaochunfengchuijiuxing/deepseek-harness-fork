@@ -45,6 +45,12 @@
       "path": "../session-source-federation"
     },
     {
+      "path": "../../fs/fs"
+    },
+    {
+      "path": "../../subprocess/subprocess"
+    },
+    {
       "path": "../../interaction/user-approval"
     },
     {

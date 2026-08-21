@@ -682,6 +682,17 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'action', description: 'acquire or release.' }, { name: 'sessionId', description: 'target session.' }],
         returns: 'holder pod id, or a structured failure.',
       },
+      {
+        signature: 'rpcCapability( request: Omit<CapabilityRequestPayload, \'type\'>, onStream?: (chunk: unknown, done?: boolean) => void, timeoutMs?: number, ): Promise<CapabilityResult>',
+        description: 'Execute a capability RPC on the central hub or a target pod.',
+        parameters: [{ name: 'request', description: 'capability request without type tag.' }, { name: 'onStream', description: 'optional streaming chunk callback.' }, { name: 'timeoutMs', description: 'request timeout in milliseconds.' }],
+        returns: 'capability result.',
+      },
+      {
+        signature: 'cancelCapabilityRpc(requestId: string): void',
+        description: 'Cancel an in-flight capability RPC.',
+        parameters: [{ name: 'requestId', description: 'request identifier.' }],
+      },
     ],
   },
   {
@@ -741,6 +752,17 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'cancelPodDelegation(podId: string, runId: string, reason?: string): void',
         description: 'Cancel an in-flight subagent run on a pod.',
         parameters: [{ name: 'podId', description: 'target pod identifier.' }, { name: 'runId', description: 'run identifier.' }, { name: 'reason', description: 'optional cancellation reason.' }],
+      },
+      {
+        signature: 'async rpcToPod( podId: string, request: Omit<CapabilityRequestMessage, \'type\'>, onStream?: (chunk: unknown, done?: boolean) => void, timeoutMs: number = 15000, ): Promise<CapabilityResultMessage>',
+        description: 'Execute a capability RPC on a target pod.',
+        parameters: [{ name: 'podId', description: 'target pod identifier.' }, { name: 'request', description: 'capability request details without type tag.' }, { name: 'onStream', description: 'optional streaming chunk callback.' }, { name: 'timeoutMs', description: 'timeout in milliseconds.' }],
+        returns: 'capability result message.',
+      },
+      {
+        signature: 'cancelCapabilityRpc(podId: string, requestId: string): void',
+        description: 'Cancel an in-flight capability RPC on a target pod.',
+        parameters: [{ name: 'podId', description: 'target pod identifier.' }, { name: 'requestId', description: 'request identifier.' }],
       },
       {
         signature: 'handlePodMessage(podId: string, message: FederationWireMessage): void',
@@ -3064,6 +3086,30 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface CancelOptions {\n    keepInbox?: boolean | undefined;\n}',
   },
   {
+    name: 'CapabilityCancelMessage',
+    declaration: 'export interface CapabilityCancelMessage {\n    type: \'capability/cancel\';\n    requestId: string;\n}',
+  },
+  {
+    name: 'CapabilityRequestMessage',
+    declaration: 'export interface CapabilityRequestMessage {\n    type: \'capability/request\';\n    requestId: string;\n    targetPodId?: string;\n    seam: CapabilitySeam;\n    method: string;\n    args: Record<string, unknown>;\n}',
+  },
+  {
+    name: 'CapabilityRequestPayload',
+    declaration: 'export interface CapabilityRequestPayload {\n    type: \'capability/request\';\n    requestId: string;\n    targetPodId?: string;\n    seam: CapabilitySeam;\n    method: string;\n    args: Record<string, unknown>;\n}',
+  },
+  {
+    name: 'CapabilityResult',
+    declaration: 'export type CapabilityResult = {\n    ok: true;\n    value?: unknown;\n} | {\n    ok: false;\n    code?: string;\n    message: string;\n};',
+  },
+  {
+    name: 'CapabilityResultMessage',
+    declaration: 'export interface CapabilityResultMessage {\n    type: \'capability/result\';\n    requestId: string;\n    ok: boolean;\n    value?: unknown;\n    error?: {\n        code?: string;\n        message: string;\n    };\n}',
+  },
+  {
+    name: 'CapabilityStreamMessage',
+    declaration: 'export interface CapabilityStreamMessage {\n    type: \'capability/stream\';\n    requestId: string;\n    seq: number;\n    chunk: unknown;\n    done?: boolean;\n}',
+  },
+  {
     name: 'ClientResponse',
     declaration: 'export interface ClientResponse {\n    type: \'client-response\';\n    rpcId: RpcId;\n    result: RpcResult<unknown>;\n}',
   },
@@ -3493,7 +3539,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage;',
   },
   {
     name: 'FileDiff',

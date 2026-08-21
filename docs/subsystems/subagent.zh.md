@@ -534,11 +534,26 @@ persistSession( sessionId: SessionId, events: SessionEvent[], header?: SessionHe
  * @returns holder pod id, or a structured failure.
  */
 leaseSession( action: 'session/lease-acquire' | 'session/lease-release', sessionId: SessionId, ): Promise<SessionLeaseResult>
+
+/**
+ * Execute a capability RPC on the central hub or a target pod.
+ * @param request - capability request without type tag.
+ * @param onStream - optional streaming chunk callback.
+ * @param timeoutMs - request timeout in milliseconds.
+ * @returns capability result.
+ */
+rpcCapability( request: Omit<CapabilityRequestPayload, 'type'>, onStream?: (chunk: unknown, done?: boolean) => void, timeoutMs?: number, ): Promise<CapabilityResult>
+
+/**
+ * Cancel an in-flight capability RPC.
+ * @param requestId - request identifier.
+ */
+cancelCapabilityRpc(requestId: string): void
 ```
 
 Types: [ContentBlock](llm-streaming.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionId](core.md)
 
-Source: [`packages/federation/federation-client/src/service.ts:23`](../../packages/federation/federation-client/src/service.ts)
+Source: [`packages/federation/federation-client/src/service.ts:30`](../../packages/federation/federation-client/src/service.ts)
 
 <a id="ctxfederationhub--federationhubservice"></a>
 
@@ -622,6 +637,23 @@ async delegateToPod( podId: string, request: RemoteSubagentStartMessage, onChunk
 cancelPodDelegation(podId: string, runId: string, reason?: string): void
 
 /**
+ * Execute a capability RPC on a target pod.
+ * @param podId - target pod identifier.
+ * @param request - capability request details without type tag.
+ * @param onStream - optional streaming chunk callback.
+ * @param timeoutMs - timeout in milliseconds.
+ * @returns capability result message.
+ */
+async rpcToPod( podId: string, request: Omit<CapabilityRequestMessage, 'type'>, onStream?: (chunk: unknown, done?: boolean) => void, timeoutMs: number = 15000, ): Promise<CapabilityResultMessage>
+
+/**
+ * Cancel an in-flight capability RPC on a target pod.
+ * @param podId - target pod identifier.
+ * @param requestId - request identifier.
+ */
+cancelCapabilityRpc(podId: string, requestId: string): void
+
+/**
  * Process an incoming message received from a pod socket.
  * @param podId - identifier of the sender pod.
  * @param message - parsed wire message.
@@ -657,7 +689,7 @@ leaseHolder(sessionId: SessionId): string | undefined
 
 Types: [ApprovalOutcome](approval.md) · [ApprovalRequest](approval.md) · [AskUserQuestionAnswer](user-questions.md) · [AskUserQuestionRequest](user-questions.md) · [SessionId](core.md)
 
-Source: [`packages/federation/federation-hub/src/service.ts:112`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:124`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 
@@ -866,7 +898,7 @@ Answer a hub-forwarded approval for a session this pod commands. Return an outco
 
 Types: [ApprovalOutcome](approval.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:43`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:64`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="federationpod-offline--emit"></a>
 
@@ -883,7 +915,7 @@ Emitted when a registered pod is marked offline due to heartbeat timeout or sock
 'federation/pod-offline': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:61`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:65`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-registered--emit"></a>
 
@@ -900,7 +932,7 @@ Emitted when a pod completes handshake and registers with the hub.
 'federation/pod-registered': (pod: PodInfo) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:55`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:59`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-unregistered--emit"></a>
 
@@ -917,7 +949,7 @@ Emitted when a pod is explicitly removed from the registry.
 'federation/pod-unregistered': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:67`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:71`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationquestion-request--waterfall"></a>
 
@@ -937,7 +969,7 @@ Answer a hub-forwarded user question for a session this pod commands. Return an 
 
 Types: [AskUserQuestionAnswer](user-questions.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:53`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:74`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="subagent-events"></a>
 

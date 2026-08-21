@@ -75,8 +75,8 @@ describe('/remote_send command and session send wire', () => {
       })
     })
     await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
-        port = (server.address() as AddressInfo).port
+      server!.listen(0, '127.0.0.1', () => {
+        port = (server!.address() as AddressInfo).port
         resolve()
       })
     })
