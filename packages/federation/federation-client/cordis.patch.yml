@@ -1,5 +1,10 @@
 # Federation Client Profile Bundle: mounts the outbound edge pod client and
 # the remote session source that lists hub sessions in the pod UI.
+- id: webserver
+  config:
+    host: !!js ctx.webStartup?.host ?? '0.0.0.0'
+    port: !!js ctx.webStartup?.port ?? 3080
+
 - insert:
     - id: session-sources
       name: '@deepseek-ai/dsh-session-source'
@@ -8,14 +13,14 @@
     - id: session-source-federation
       name: '@deepseek-ai/dsh-session-source-federation'
       config:
-        endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT || 'ws://127.0.0.1:3080/federation/connect'
+        endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT ?? 'ws://127.0.0.1:3088/federation/connect'
         tokenEnv: DSH_POD_TOKEN
         sourceId: federation-hub
         sourceName: Hub Sessions
     - id: federation-client
       name: '@deepseek-ai/dsh-federation-client'
       config:
-        endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT || 'ws://127.0.0.1:3080/federation/connect'
-        podId: !!js process.env.DSH_POD_ID || 'pod-local'
-        name: !!js process.env.DSH_POD_NAME || 'Local Pod'
+        endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT ?? 'ws://127.0.0.1:3088/federation/connect'
+        podId: !!js process.env.DSH_POD_ID ?? 'pod-local'
+        name: !!js process.env.DSH_POD_NAME ?? 'Local Pod'
         token: !!js process.env.DSH_POD_TOKEN

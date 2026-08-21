@@ -1,0 +1,87 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deepseek-harness:latest
+    container_name: dsh-hub
+    restart: unless-stopped
+    ports:
+      - "3080:3080"
+      - "3088:3088"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env (see .env.example)}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - DSH_FEDERATION_TOKEN=${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}
+      - DSH_HOME=/data/hub
+      - DSH_STORAGE_DIR=/data/hub
+    volumes:
+      - hub_data:/data/hub
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-hub/cordis.patch.yml", "--no-open"]
+    networks:
+      - dsh-net
+
+  pod-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deepseek-harness:latest
+    container_name: dsh-pod-1
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "3081:3080"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env (see .env.example)}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - DSH_FEDERATION_ENDPOINT=ws://hub:3088/federation/connect
+      - DSH_POD_ID=pod-1
+      - DSH_POD_NAME=Worker Pod 1
+      - DSH_POD_TOKEN=${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}
+      - DSH_HOME=/data/pod-1
+      - DSH_STORAGE_DIR=/data/pod-1
+    volumes:
+      - pod1_data:/data/pod-1
+      - pod1_workspace:/workspace
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open"]
+    networks:
+      - dsh-net
+
+  pod-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deepseek-harness:latest
+    container_name: dsh-pod-2
+    restart: unless-stopped
+    depends_on:
+      - hub
+    ports:
+      - "3082:3080"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY in .env (see .env.example)}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - DSH_FEDERATION_ENDPOINT=ws://hub:3088/federation/connect
+      - DSH_POD_ID=pod-2
+      - DSH_POD_NAME=Worker Pod 2
+      - DSH_POD_TOKEN=${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}
+      - DSH_HOME=/data/pod-2
+      - DSH_STORAGE_DIR=/data/pod-2
+    volumes:
+      - pod2_data:/data/pod-2
+      - pod2_workspace:/workspace
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open"]
+    networks:
+      - dsh-net
+
+networks:
+  dsh-net:
+    driver: bridge
+
+volumes:
+  hub_data:
+  pod1_data:
+  pod2_data:
+  pod1_workspace:
+  pod2_workspace:

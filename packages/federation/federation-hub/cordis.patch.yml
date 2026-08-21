@@ -1,5 +1,10 @@
 # Federation Hub Profile Bundle: mounts the central federation control-plane
 # service plus the session-source seam it uses to answer pod session reads.
+- id: webserver
+  config:
+    host: !!js ctx.webStartup?.host ?? '0.0.0.0'
+    port: !!js ctx.webStartup?.port ?? 3080
+
 - insert:
     - id: session-sources
       name: '@deepseek-ai/dsh-session-source'
@@ -8,6 +13,6 @@
     - id: federation-hub
       name: '@deepseek-ai/dsh-federation-hub'
       config:
-        port: !!js process.env.DSH_FEDERATION_PORT ? Number(process.env.DSH_FEDERATION_PORT) : 3080
-        host: !!js process.env.DSH_FEDERATION_HOST || '127.0.0.1'
+        port: !!js "process.env.DSH_FEDERATION_PORT ? Number(process.env.DSH_FEDERATION_PORT) : 3088"
+        host: !!js process.env.DSH_FEDERATION_HOST ?? '0.0.0.0'
         token: !!js process.env.DSH_FEDERATION_TOKEN
