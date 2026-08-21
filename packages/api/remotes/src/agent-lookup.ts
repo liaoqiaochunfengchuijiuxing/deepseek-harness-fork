@@ -1,5 +1,7 @@
 /** Host BFF policy for resolving Remote Agent and Session identities. */
 
+import { isDeepStrictEqual } from 'node:util'
+
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions, AgentSetup } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
@@ -85,6 +87,69 @@ export function apiRemoteSubagentOwnershipError(sessionId: SessionId): ApiRemote
 }
 
 /**
+ * Read one session through the session-sources seam, unwrapping the aggregate
+ * service's `{ source, session }` shape and accepting the bare single-source
+ * shape as well.
+ * @param ctx - Host Context carrying the optional session-sources service.
+ * @param sessionId - identity to read from any remote source.
+ * @returns the remote header and event log, or undefined when no source knows the identity.
+ */
+async function readRemoteSession(
+  ctx: Context,
+  sessionId: SessionId,
+): Promise<{ header: SessionHeader; events: SessionEvent[] } | undefined> {
+  const sources = ctx.get('sessionSources') as {
+    getSession?: (id: SessionId) => Promise<
+      | { source?: unknown; session?: { header: SessionHeader; events: SessionEvent[] } }
+      | { header: SessionHeader; events: SessionEvent[] }
+      | undefined
+    >
+  } | undefined
+  if (sources?.getSession === undefined) return undefined
+  const remote = await sources.getSession(sessionId)
+  if (remote === undefined) return undefined
+  const inspection = 'session' in remote && remote.session !== undefined
+    ? remote.session
+    : (remote as { header: SessionHeader; events: SessionEvent[] })
+  if (inspection.header === undefined || !Array.isArray(inspection.events)) return undefined
+  return { header: inspection.header, events: inspection.events }
+}
+
+/** Structural read/append face this module needs from the durable store. */
+interface SessionPersistenceLike {
+  list(): Promise<{ id: SessionId }[]>
+  inspect(id: SessionId): Promise<{ meta: SessionHeader; events: readonly SessionEvent[] }>
+  create(meta: SessionHeader): Promise<void>
+  append(id: SessionId, events: readonly SessionEvent[]): Promise<void>
+}
+
+/**
+ * Append the remote suffix a materialized local copy is missing, when the
+ * local log is a strict seq prefix of the remote one. A local log that
+ * diverged or already covers the remote events is left untouched: under the
+ * single-writer model a divergence means another owner wrote one of the two
+ * logs, and reconciling it is lease protocol work, not this read path's.
+ * @param persistence - local durable store holding the materialized copy.
+ * @param sessionId - identity with both a local copy and a remote source.
+ * @param remote - the remote source's full event log.
+ */
+async function appendRemoteSuffix(
+  persistence: SessionPersistenceLike,
+  sessionId: SessionId,
+  remote: readonly SessionEvent[],
+): Promise<void> {
+  const local = await persistence.inspect(sessionId)
+  if (local.events.length >= remote.length) return
+  for (let index = 0; index < local.events.length; index += 1) {
+    // Deep equality, not just seq order: a same-seq different-content prefix
+    // means the two logs were written by different owners.
+    if (!isDeepStrictEqual(remote[index], local.events[index])) return
+  }
+  const suffix = remote.slice(local.events.length)
+  if (suffix.length > 0) await persistence.append(sessionId, suffix)
+}
+
+/**
  * Inspect one cold served session without repairing, resuming, or publishing it.
  * @param ctx - Host Context carrying the optional persistence provider.
  * @param sessionId - durable identity to inspect.
@@ -106,23 +171,9 @@ export async function inspectApiRemoteSession(
     }
   }
 
-  const sources = ctx.get('sessionSources') as {
-    getSession?: (id: SessionId) => Promise<
-      | { source?: unknown; session?: { header: SessionHeader; events: SessionEvent[] } }
-      | { header: SessionHeader; events: SessionEvent[] }
-      | undefined
-    >
-  } | undefined
-  if (sources?.getSession !== undefined) {
-    const remote = await sources.getSession(sessionId)
-    if (remote !== undefined) {
-      const inspection = 'session' in remote && remote.session !== undefined
-        ? remote.session
-        : (remote as { header: SessionHeader; events: SessionEvent[] })
-      if (inspection && inspection.header !== undefined && Array.isArray(inspection.events)) {
-        return { meta: inspection.header, events: [...inspection.events] }
-      }
-    }
+  const remote = await readRemoteSession(ctx, sessionId)
+  if (remote !== undefined) {
+    return { meta: remote.header, events: [...remote.events] }
   }
 
   if (persistence === undefined) {
@@ -182,8 +233,9 @@ export function createApiRemoteAgentResolver(
           }
           // `agents.resume` prepares from the local durable store only, so a
           // session whose events live in a remote source must be materialized
-          // locally before resume.
-          const persistence = ctx.get('sessionPersistence')
+          // locally before resume; an already-materialized copy catches up to
+          // the remote suffix before the same resume.
+          const persistence = ctx.get('sessionPersistence') as SessionPersistenceLike | undefined
           if (persistence !== undefined) {
             const list = await persistence.list()
             const existsLocally = list.some(candidate => candidate.id === sessionId)
@@ -191,6 +243,11 @@ export function createApiRemoteAgentResolver(
               await persistence.create(inspected.meta)
               if (inspected.events.length > 0) {
                 await persistence.append(sessionId, inspected.events)
+              }
+            } else {
+              const remote = await readRemoteSession(ctx, sessionId)
+              if (remote !== undefined) {
+                await appendRemoteSuffix(persistence, sessionId, remote.events)
               }
             }
           }

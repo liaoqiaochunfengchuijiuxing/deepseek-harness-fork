@@ -147,6 +147,87 @@ describe('API Remote Agent resolver races', () => {
     }
   })
 
+  it('appends the remote suffix to an already-materialized stale copy', async () => {
+    const ctx = await createContext()
+    const sessionId = sid('stale-materialized')
+    const meta = header(sessionId)
+    const base = [
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+      { type: 'turn/end', seq: 1, time: 2, data: { turn: 0, reason: 'success' } },
+    ] as SessionEvent[]
+    const growth = [{ type: 'turn/start', seq: 2, time: 3, data: { turn: 1 } }] as SessionEvent[]
+    const appended: SessionEvent[][] = []
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      inspect: () => Promise.resolve({ meta, events: base }),
+      create: () => Promise.resolve(),
+      append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+        appended.push([...batch])
+        return Promise.resolve()
+      },
+    } as never)
+    ctx.provide('sessionSources', {
+      getSession: () => Promise.resolve({ source: {}, session: { header: meta, events: [...base, ...growth] } }),
+    } as never)
+    let published: Session | undefined
+    vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
+      published = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
+      return { agent: stubAgent(ctx, published), dispose: () => Promise.resolve() }
+    })
+
+    const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
+
+    expect(result).toMatchObject({ agent: { id: sessionId } })
+    expect(appended).toEqual([growth])
+    await ctx.fiber.dispose()
+  })
+
+  it('leaves a diverged or current local copy untouched', async () => {
+    const cases: readonly [name: string, remote: SessionEvent[]][] = [
+      ['diverged', [
+        { type: 'turn/start', seq: 0, time: 1, data: { turn: 9 } },
+        { type: 'turn/end', seq: 1, time: 2, data: { turn: 9, reason: 'success' } },
+        { type: 'turn/start', seq: 2, time: 3, data: { turn: 1 } },
+      ] as SessionEvent[]],
+      ['current', [
+        { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+        { type: 'turn/end', seq: 1, time: 2, data: { turn: 0, reason: 'success' } },
+      ] as SessionEvent[]],
+    ]
+    for (const [name, remoteEvents] of cases) {
+      const ctx = await createContext()
+      const sessionId = sid(`${name}-copy`)
+      const meta = header(sessionId)
+      const local = [
+        { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+        { type: 'turn/end', seq: 1, time: 2, data: { turn: 0, reason: 'success' } },
+      ] as SessionEvent[]
+      const appended: SessionEvent[][] = []
+      ctx.provide('sessionPersistence', {
+        list: () => Promise.resolve([meta]),
+        inspect: () => Promise.resolve({ meta, events: local }),
+        create: () => Promise.resolve(),
+        append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+          appended.push([...batch])
+          return Promise.resolve()
+        },
+      } as never)
+      ctx.provide('sessionSources', {
+        getSession: () => Promise.resolve({ source: {}, session: { header: meta, events: remoteEvents } }),
+      } as never)
+      vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
+        const session = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
+        return { agent: stubAgent(ctx, session), dispose: () => Promise.resolve() }
+      })
+
+      const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
+
+      expect(result).toMatchObject({ agent: { id: sessionId } })
+      expect(appended).toEqual([])
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('uses the shared cold-resume policy for the Agent Host Context', async () => {
     const ctx = await createContext()
     const sessionId = sid('context-cold-resume')
