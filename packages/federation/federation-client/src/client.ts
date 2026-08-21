@@ -6,8 +6,11 @@
  * @module @deepseek-ai/dsh-federation-client/client
  */
 
+import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
   DelegatedTaskExecutor,
   FederationClientWireMessage,
@@ -17,6 +20,7 @@ import type {
   RemoteSubagentChunkPayload,
   RemoteSubagentStartPayload,
   RemoteSubagentStopPayload,
+  SessionSendResult,
 } from './types.ts'
 
 /** Configuration options for the federation pod client. */
@@ -45,6 +49,8 @@ export interface FederationClientConfig {
   sandboxModes?: string[]
   /** Declared role for this pod. */
   role?: 'read' | 'command' | 'manage' | 'takeover'
+  /** Bound (ms) on a `session/send` round-trip. */
+  requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
 }
@@ -52,6 +58,11 @@ export interface FederationClientConfig {
 interface ActiveTask {
   id: string
   abortController: AbortController
+}
+
+interface PendingSend {
+  resolve: (result: SessionSendResult) => void
+  timer: NodeJS.Timeout
 }
 
 /**
@@ -92,6 +103,7 @@ export class FederationPodClient {
   private reconnectTimer: NodeJS.Timeout | undefined
   private currentReconnectDelay: number
   private readonly inFlightTasks = new Map<string, ActiveTask>()
+  private readonly pendingSends = new Map<string, PendingSend>()
 
   constructor(
     private readonly ctx: Context,
@@ -150,6 +162,7 @@ export class FederationPodClient {
       task.abortController.abort('federation client disposed')
     }
     this.inFlightTasks.clear()
+    this.rejectPendingSends('federation client disposed')
 
     if (this.socket) {
       try {
@@ -170,6 +183,47 @@ export class FederationPodClient {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(msg))
     }
+  }
+
+  /**
+   * Deliver user content to a writer-node session inbox over the hub connection.
+   * @param sessionId - target session on the writer node.
+   * @param content - user-role content blocks.
+   * @param clientMessageId - idempotency key scoped to `sessionId`.
+   * @returns accepted message id, or a structured failure.
+   */
+  sendToSession(
+    sessionId: SessionId,
+    content: ContentBlock[],
+    clientMessageId: string,
+  ): Promise<SessionSendResult> {
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.resolve({
+        ok: false,
+        code: 'disconnected',
+        message: 'federation client is not connected',
+      })
+    }
+    const requestId = randomUUID()
+    const timeoutMs = this.config.requestTimeoutMs ?? 10_000
+    return new Promise<SessionSendResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSends.delete(requestId)
+        resolve({
+          ok: false,
+          code: 'timeout',
+          message: `session send timed out after ${timeoutMs}ms`,
+        })
+      }, timeoutMs)
+      this.pendingSends.set(requestId, { resolve, timer })
+      this.sendMessage({
+        type: 'session/send',
+        requestId,
+        sessionId,
+        content,
+        clientMessageId,
+      })
+    })
   }
 
   private resolveToken(): string | undefined {
@@ -239,7 +293,16 @@ export class FederationPodClient {
       clearInterval(this.heartbeatTimer)
       this.heartbeatTimer = undefined
     }
+    this.rejectPendingSends('federation client is not connected')
     this.scheduleReconnect()
+  }
+
+  private rejectPendingSends(message: string): void {
+    for (const [id, pending] of this.pendingSends) {
+      clearTimeout(pending.timer)
+      pending.resolve({ ok: false, code: 'disconnected', message })
+      this.pendingSends.delete(id)
+    }
   }
 
   private scheduleReconnect(): void {
@@ -299,6 +362,25 @@ export class FederationPodClient {
       }
       case 'subagent/abort': {
         this.handleSubagentAbort(msg)
+        break
+      }
+      case 'session/send-result': {
+        const pending = this.pendingSends.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingSends.delete(msg.requestId)
+        if (typeof msg.messageId === 'string' && msg.messageId.length > 0) {
+          pending.resolve({ ok: true, messageId: msg.messageId })
+          break
+        }
+        const code = msg.code === 'writer-offline' || msg.code === 'unauthorized' || msg.code === 'invalid'
+          ? msg.code
+          : 'invalid'
+        pending.resolve({
+          ok: false,
+          code,
+          message: msg.error ?? 'session send failed',
+        })
         break
       }
       default:

@@ -7,12 +7,15 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type {} from '@deepseek-ai/dsh-commands'
 import { FederationPodClient, type FederationClientConfig } from './client.ts'
 import { FederationClientService } from './service.ts'
+import { executeRemoteSend } from './remote-send.ts'
 
 export * from './types.ts'
 export * from './client.ts'
 export * from './service.ts'
+export * from './remote-send.ts'
 
 export const name = 'federation-client'
 
@@ -34,6 +37,7 @@ export const Config: z<Config> = z.object({
   tools: z.array(z.string()).description('Supported tool names on this pod'),
   sandboxModes: z.array(z.string()).description('Supported sandbox execution modes'),
   role: z.union([z.const('read'), z.const('command'), z.const('manage'), z.const('takeover')]).default('command').description('Declared role for this pod'),
+  requestTimeoutMs: z.natural().default(10000).description('Bound (ms) on a session/send round-trip'),
 })
 
 /**
@@ -51,4 +55,14 @@ export function apply(ctx: Context, config: Config): void {
       client.dispose()
     }
   }, 'federation.client.connect')
+
+  const commands = ctx.get('commands')
+  if (commands) {
+    commands.register({
+      name: 'remote_send',
+      description: 'send a message to a remote writer-node session inbox',
+      input: { hint: '<sessionId> <message>' },
+      handler: invocation => executeRemoteSend(ctx, invocation),
+    })
+  }
 }

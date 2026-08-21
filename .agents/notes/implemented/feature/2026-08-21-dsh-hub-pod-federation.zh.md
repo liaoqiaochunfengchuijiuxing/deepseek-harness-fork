@@ -91,7 +91,7 @@ v0 与 v1 已在树中；v2–v4 仍待做。
 
 - v0：hub 带注册表、外拨连接和 `dsh-subagent-remote` 服务端端点；pod 客户端插件；hub 委派 pod；pod 用浏览器触达 hub 会话。
 - v1：只读级联邦会话源——pod 上原生的远端会话列表、搜索、实时渲染，带来源徽标，未知节点类型回退既有 generic 卡片。
-- v2：命令级——`remote_send`、审批与问询路由回指挥 pod。
+- v2：命令级——`remote_send` 已在树中；审批与问询路由回指挥 pod 仍待做。
 - v3：manage 与 takeover——fork-to-local、租约交接、双向漫游。
 - v4：peer 中继、可选的 capability-server 粒度（远端 `ctx.fs`/`ctx.subprocess` provider，E2B 形状）、pod 直连传输。
 
@@ -119,12 +119,13 @@ v0 与 v1 已在树中：
 - hub 所属会话可经认证的 pod 连接与 hub 自身的 web profile 打开。未认证升级一律拒绝。
 - 在 pod 上，远端会话出现在 `ctx.sessionSources` 列表中并带来源身份；断线标记 degraded，重连后从上次 seq 续订。打开远端会话使用本地渲染器；未知会话节点类型保留既有 generic 卡片。
 
-仍未在树中：命令级 `remote_send` 与审批路由（v2）；fork-to-local 与写者租约（v3）；peer 中继（v4）。
+`/remote_send` 已在树中：持有 command 能力的 pod 按到达顺序把 `session/send` 送进活着的写者节点 inbox，并用 `clientMessageId` 幂等；没有活 agent 时以 `writer-offline` 失败。审批路由、fork-to-local、写者租约与 peer 中继仍未在树中。
 
 ## Testing
 
 - M1：`packages/federation/federation-hub/tests/federation-e2e.spec.ts` 在真实 WebSocket 上启动 hub 与 pod；`packages/subagent/subagent-remote/tests/subagent-remote.spec.ts` 对 mock 端点映射 stop reason。
 - M2：`packages/federation/session-source-federation/tests/federation-e2e-m2.spec.ts` 从 pod 列出、检查、搜索、订阅、降级并恢复一条 hub 会话。本地源等价性在 `packages/session/session-source-local/tests/session-source-local.spec.ts`。来源徽标与未知节点 generic 卡片在 client UI 单测中（`packages/client/ui-workspace/tests/rows.client.spec.tsx`、`packages/client/ui-conversation/tests/chat-branch-tails.client.spec.tsx`）。
+- T3.1：`packages/federation/federation-hub/tests/federation-hub.spec.ts` 把有序、幂等的 `session/send` 送进活 agent inbox，并拒绝 `read` token 与缺失写者。`packages/federation/federation-client/tests/remote-send.spec.ts` 在真实 WebSocket 上跑 `/remote_send`。
 
 ## Risks
 

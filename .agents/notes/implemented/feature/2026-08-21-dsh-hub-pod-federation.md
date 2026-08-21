@@ -91,7 +91,7 @@ v0 and v1 are in the tree; v2–v4 remain.
 
 - v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser.
 - v1: read-level federation session source — native listing, search, live rendering of remote sessions on a pod, with source badges and generic-card fallback for unknown node kinds.
-- v2: command level — `remote_send`, approval and question routing back to the commanding pod.
+- v2: command level — `remote_send` is in the tree; approval and question routing back to the commanding pod remain.
 - v3: manage and takeover — fork-to-local, lease handoff, bidirectional roaming.
 - v4: peer relay, optional capability-server granularity (remote `ctx.fs`/`ctx.subprocess` providers, E2B-shaped), direct pod-to-pod transport.
 
@@ -119,12 +119,13 @@ v0 and v1 are in the tree:
 - Hub-owned sessions are reachable over the authenticated pod connection and the hub's own web profile. Unauthenticated upgrades are refused.
 - On a pod, remote sessions appear in `ctx.sessionSources` listings with source identity; disconnect marks them degraded and reconnect resumes subscriptions from the last seq. Opening a remote session uses local renderers; unknown conversation node kinds keep the existing generic card.
 
-Still out of tree: command-level `remote_send` and approval routing (v2); fork-to-local and writer leases (v3); peer relay (v4).
+`/remote_send` is in the tree: a command-capable pod delivers `session/send` into a live writer-node inbox, in order, with `clientMessageId` idempotency; a missing live agent fails as `writer-offline`. Approval routing, fork-to-local, writer leases, and peer relay remain out of tree.
 
 ## Testing
 
 - M1: `packages/federation/federation-hub/tests/federation-e2e.spec.ts` boots a hub and pods over real WebSockets; `packages/subagent/subagent-remote/tests/subagent-remote.spec.ts` maps stop reasons against a mock endpoint.
 - M2: `packages/federation/session-source-federation/tests/federation-e2e-m2.spec.ts` lists, inspects, searches, streams, degrades, and resumes a hub session from a pod. Local-source equivalence is in `packages/session/session-source-local/tests/session-source-local.spec.ts`. Source badges and unknown-node generic cards are in the client UI unit tests (`packages/client/ui-workspace/tests/rows.client.spec.tsx`, `packages/client/ui-conversation/tests/chat-branch-tails.client.spec.tsx`).
+- T3.1: `packages/federation/federation-hub/tests/federation-hub.spec.ts` delivers ordered, idempotent `session/send` into a live agent inbox and fails `read` tokens and missing writers. `packages/federation/federation-client/tests/remote-send.spec.ts` runs `/remote_send` over a real WebSocket.
 
 ## Risks
 

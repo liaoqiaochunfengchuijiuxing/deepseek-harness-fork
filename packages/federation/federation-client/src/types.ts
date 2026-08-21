@@ -6,6 +6,7 @@
  */
 
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 
 /** Pod client connection lifecycle status. */
@@ -123,6 +124,39 @@ export interface FederationRegisteredPayload {
   role: 'read' | 'command' | 'manage' | 'takeover'
 }
 
+/** Deliver a user message into a writer-node session inbox. */
+export interface FederationSessionSendPayload {
+  /** Discriminant message type tag. */
+  type: 'session/send'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** User-role content delivered to the session inbox. */
+  content: ContentBlock[]
+  /** Idempotency key scoped to `sessionId`. */
+  clientMessageId: string
+}
+
+/** Result of a {@link FederationSessionSendPayload}. */
+export interface FederationSessionSendResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/send-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Accepted inbox message id when the send succeeded. */
+  messageId?: string
+  /** Failure code when the send did not enqueue. */
+  code?: 'writer-offline' | 'unauthorized' | 'invalid'
+  /** Failure message when the send did not enqueue. */
+  error?: string
+}
+
+/** Outcome of {@link FederationClientService.sendToSession}. */
+export type SessionSendResult =
+  | { ok: true; messageId: string }
+  | { ok: false; code: 'disconnected' | 'timeout' | 'writer-offline' | 'unauthorized' | 'invalid'; message: string }
+
 /** Incoming or outgoing wire message union on client side. */
 export type FederationClientWireMessage =
   | FederationRegisterPayload
@@ -133,6 +167,8 @@ export type FederationClientWireMessage =
   | RemoteSubagentChunkPayload
   | RemoteSubagentStopPayload
   | RemoteSubagentAbortPayload
+  | FederationSessionSendPayload
+  | FederationSessionSendResultPayload
 
 /** Custom execution handler signature for executing delegated tasks. */
 export type DelegatedTaskExecutor = (

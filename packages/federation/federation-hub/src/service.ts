@@ -7,15 +7,21 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import type WebSocket from 'ws'
-import type {
-  FederationTokenRole,
-  FederationWireMessage,
-  PodCapabilities,
-  PodInfo,
-  PodStatus,
-  RemoteSubagentAbortMessage,
-  RemoteSubagentStartMessage,
-  RemoteSubagentStopMessage,
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import {
+  roleAllowsCommand,
+  type FederationSessionSendErrorCode,
+  type FederationSessionSendMessage,
+  type FederationTokenRole,
+  type FederationWireMessage,
+  type PodCapabilities,
+  type PodInfo,
+  type PodStatus,
+  type RemoteSubagentAbortMessage,
+  type RemoteSubagentStartMessage,
+  type RemoteSubagentStopMessage,
 } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -67,6 +73,8 @@ export class FederationHubService extends Service {
   private readonly pods = new Map<string, InternalPodRecord>()
   private readonly delegations = new Map<string, InFlightDelegation>()
   private readonly subscriptions = new Map<string, () => void>()
+  private readonly sendTails = new Map<string, Promise<void>>()
+  private readonly acceptedSends = new Map<string, string>()
 
   constructor(ctx: Context) {
     super(ctx, 'federationHub')
@@ -433,8 +441,108 @@ export class FederationHubService extends Service {
         }
         break
       }
+      case 'session/send': {
+        void this.handleSessionSend(podId, message)
+        break
+      }
       default:
         break
     }
+  }
+
+  private replySessionSend(
+    podId: string,
+    requestId: string,
+    result: { messageId: string } | { code: FederationSessionSendErrorCode; error: string },
+  ): void {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return
+    if ('messageId' in result) {
+      record.socket.send(JSON.stringify({
+        type: 'session/send-result',
+        requestId,
+        messageId: result.messageId,
+      }))
+      return
+    }
+    record.socket.send(JSON.stringify({
+      type: 'session/send-result',
+      requestId,
+      code: result.code,
+      error: result.error,
+    }))
+  }
+
+  private isContentBlocks(value: unknown): value is ContentBlock[] {
+    return Array.isArray(value)
+      && value.length > 0
+      && value.every(block => typeof block === 'object' && block !== null && 'type' in block)
+  }
+
+  /**
+   * Deliver one pod `session/send` into the live writer-node inbox.
+   * Sends for one session run in arrival order. A repeated `clientMessageId`
+   * returns the first accepted message id.
+   * @param podId - sending pod.
+   * @param message - send request.
+   */
+  private async handleSessionSend(podId: string, message: FederationSessionSendMessage): Promise<void> {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replySessionSend(podId, message.requestId, {
+        code: 'unauthorized',
+        error: 'session send requires a command-capable token',
+      })
+      return
+    }
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0
+      || typeof message.clientMessageId !== 'string' || message.clientMessageId.length === 0
+      || !this.isContentBlocks(message.content)) {
+      this.replySessionSend(podId, message.requestId, {
+        code: 'invalid',
+        error: 'session send requires sessionId, clientMessageId, and non-empty content',
+      })
+      return
+    }
+
+    const sessionKey = String(message.sessionId)
+    const idempotencyKey = `${sessionKey}:${message.clientMessageId}`
+    const run = (): void => {
+      try {
+        const accepted = this.acceptedSends.get(idempotencyKey)
+        if (accepted !== undefined) {
+          this.replySessionSend(podId, message.requestId, { messageId: accepted })
+          return
+        }
+        const agents = this.ctx.get('agents') as { get(id: SessionId): Agent | undefined } | undefined
+        const agent = agents?.get(SessionId(message.sessionId))
+        if (agent === undefined) {
+          this.replySessionSend(podId, message.requestId, {
+            code: 'writer-offline',
+            error: `writer is offline for session ${message.sessionId}`,
+          })
+          return
+        }
+        const userMessage = createUserMessage({
+          content: message.content,
+          source: { kind: 'user' },
+        })
+        agent.followup(userMessage)
+        this.acceptedSends.set(idempotencyKey, userMessage.id)
+        this.replySessionSend(podId, message.requestId, { messageId: userMessage.id })
+      } catch (err: unknown) {
+        this.replySessionSend(podId, message.requestId, {
+          code: 'invalid',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    const prev = this.sendTails.get(sessionKey) ?? Promise.resolve()
+    const next = prev.then(() => {
+      run()
+    })
+    this.sendTails.set(sessionKey, next)
+    await next
   }
 }

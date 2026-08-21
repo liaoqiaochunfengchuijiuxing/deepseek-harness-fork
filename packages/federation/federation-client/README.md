@@ -11,6 +11,7 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 3. **Heartbeat Liveness:** Sends periodic `federation/heartbeat` messages at configured intervals (`heartbeatIntervalMs`) to maintain online status in the hub's pod registry.
 4. **Delegated Task Execution:** Receives `subagent/start` messages from the hub, checks workspace constraints, executes tasks locally using the pod's own credentials and model routing, streams deltas via `subagent/chunk`, and returns final results via `subagent/stop`.
 5. **Cancellation & Abort:** Listens for `subagent/abort` messages to cancel in-flight tasks via `AbortController` and clean up running processes.
+6. **`/remote_send`:** When `ctx.commands` is mounted, registers a human command that delivers `<sessionId> <message>` to the writer-node inbox over `session/send`. Disconnected, unauthorized, writer-offline, and invalid sends return an error result and do not submit the text as a local model prompt.
 
 ## Configuration
 
@@ -28,6 +29,7 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 | `tools` | optional | List of supported tool names. |
 | `sandboxModes` | optional | List of supported sandbox execution modes. |
 | `role` | `command` | Declared capability role (`read`, `command`, `manage`, or `takeover`). |
+| `requestTimeoutMs` | `10000` | Bound (ms) on a `session/send` round-trip. |
 
 ```yaml
 - id: federation-client
@@ -57,7 +59,21 @@ The pod pays for its own context window and token usage using its own local cred
 
 Neutral to the delegating parent. On the pod, local execution follows the normal append-only KV cache lifecycle of fresh subagent sessions.
 
+### `/remote_send`
+
+#### What the model sees
+
+The commanding pod's model does not see the command text. The writer-node session receives an ordinary user follow-up in its inbox; that content is model-visible on the writer node and reconstructable from its session log.
+
+#### Token effect
+
+Zero on the commanding pod. The writer node pays for the follow-up turn.
+
+#### KV Cache effect
+
+Independent of the commanding pod request cache. The writer node's next request grows append-only with the new user message.
+
 ## Known Limitations and Deferred Work
 
-- Command-level send and approval routing over the pod connection is deferred to M3.
+- Approval and question routing over the pod connection is deferred to T3.2.
 - Persistent session caching and checkpoint upload to hub is deferred to M4.

@@ -7,6 +7,7 @@ import {
   FederationHubService,
   FederationHubServer,
   rawDataToString,
+  roleAllowsCommand,
   type FederationRegisteredMessage,
   type FederationHeartbeatAckMessage,
   type RemoteSubagentStartMessage,
@@ -27,6 +28,15 @@ function createFakeSocket(): { socket: WebSocket; send: ReturnType<typeof vi.fn>
   } as unknown as WebSocket
   return { socket, send }
 }
+
+describe('roleAllowsCommand', () => {
+  it('allows command and above, rejects read', () => {
+    expect(roleAllowsCommand('read')).toBe(false)
+    expect(roleAllowsCommand('command')).toBe(true)
+    expect(roleAllowsCommand('manage')).toBe(true)
+    expect(roleAllowsCommand('takeover')).toBe(true)
+  })
+})
 
 describe('FederationHubService', () => {
   let ctx: Context
@@ -139,6 +149,198 @@ describe('FederationHubService', () => {
     const res = await delegationPromise
     expect(res.stopReason).toBe('aborted')
     expect(res.diagnostic).toBe('user abort')
+  })
+
+  it('rejects session/send without a command-capable token', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-read', 'Read Pod', {}, 'read', socket)
+    service.handlePodMessage('pod-read', {
+      type: 'session/send',
+      requestId: 'r1',
+      sessionId: 'sess-1' as never,
+      content: [{ type: 'text', text: 'hi' }],
+      clientMessageId: 'c1',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', requestId: 'r1', code: 'unauthorized' })
+  })
+
+  it('rejects session/send when the writer agent is not live', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r2',
+      sessionId: 'sess-missing' as never,
+      content: [{ type: 'text', text: 'hi' }],
+      clientMessageId: 'c2',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', code: 'writer-offline' })
+  })
+
+  it('rejects session/send payloads with non-content blocks', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-blocks',
+      sessionId: 'sess-1' as never,
+      content: [{}] as never,
+      clientMessageId: 'c-blocks',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', code: 'invalid' })
+  })
+
+  it('rejects invalid session/send payloads', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-invalid',
+      sessionId: '' as never,
+      content: [],
+      clientMessageId: '',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', code: 'invalid' })
+  })
+
+  it('delivers session/send to the live writer inbox in order and is idempotent', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    const delivered: string[] = []
+    const followup = vi.fn((message: { id: string; content: Array<{ text?: string }> }) => {
+      const text = message.content[0]?.text ?? ''
+      delivered.push(text)
+    })
+    ctx.provide('agents', {
+      get: (id: string) => id === 'sess-live'
+        ? { followup }
+        : undefined,
+    })
+
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-a',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'first' }],
+      clientMessageId: 'idemp-a',
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-b',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'second' }],
+      clientMessageId: 'idemp-b',
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-a-dup',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'first-again' }],
+      clientMessageId: 'idemp-a',
+    })
+
+    await vi.waitFor(() => {
+      expect(send.mock.calls.length).toBe(3)
+    })
+    expect(delivered).toEqual(['first', 'second'])
+    const replies = send.mock.calls.map(call => JSON.parse(String(call[0])) as {
+      requestId: string
+      messageId?: string
+    })
+    const first = replies.find(r => r.requestId === 'r-a')
+    const dup = replies.find(r => r.requestId === 'r-a-dup')
+    expect(first?.messageId).toBeDefined()
+    expect(dup?.messageId).toBe(first?.messageId)
+    expect(followup).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps a followup throw to an invalid session send', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    ctx.provide('agents', {
+      get: () => ({
+        followup: () => {
+          throw new Error('inbox closed')
+        },
+      }),
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-throw',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'x' }],
+      clientMessageId: 'c-throw',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', code: 'invalid' })
+  })
+
+  it('stringifies a non-Error followup throw', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', socket)
+    ctx.provide('agents', {
+      get: () => ({
+        followup: () => {
+          throw 42
+        },
+      }),
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-throw-42',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'x' }],
+      clientMessageId: 'c-throw-42',
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const payload = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(payload).toMatchObject({ type: 'session/send-result', code: 'invalid', error: '42' })
+  })
+
+  it('does not reply to session/send when the pod socket is not open', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'read', socket)
+    ;(socket as { readyState: number }).readyState = 0
+    service.handlePodMessage('pod-1', {
+      type: 'session/send',
+      requestId: 'r-closed',
+      sessionId: 'sess-1' as never,
+      content: [{ type: 'text', text: 'hi' }],
+      clientMessageId: 'c-closed',
+    })
+    await new Promise(r => setTimeout(r, 20))
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('ignores session/send from an unknown pod', async () => {
+    service.handlePodMessage('missing-pod', {
+      type: 'session/send',
+      requestId: 'r-missing',
+      sessionId: 'sess-1' as never,
+      content: [{ type: 'text', text: 'hi' }],
+      clientMessageId: 'c-missing',
+    })
   })
 })
 

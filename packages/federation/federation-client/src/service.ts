@@ -6,8 +6,10 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { FederationPodClient } from './client.ts'
-import type { PodConnectionStatus } from './types.ts'
+import type { PodConnectionStatus, SessionSendResult } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -48,5 +50,20 @@ export class FederationClientService extends Service {
    */
   getActiveTaskCount(): number {
     return this.client.getActiveTaskCount()
+  }
+
+  /**
+   * Deliver user content to a writer-node session inbox.
+   * @param sessionId - target session on the writer node.
+   * @param content - user-role content blocks.
+   * @param clientMessageId - idempotency key scoped to `sessionId`.
+   * @returns accepted message id, or a structured failure.
+   */
+  sendToSession(
+    sessionId: SessionId,
+    content: ContentBlock[],
+    clientMessageId: string,
+  ): Promise<SessionSendResult> {
+    return this.client.sendToSession(sessionId, content, clientMessageId)
   }
 }

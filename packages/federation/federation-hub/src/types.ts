@@ -275,6 +275,56 @@ export interface FederationSessionUnsubscribeMessage {
   subscriptionId: string
 }
 
+/**
+ * Whether `role` may send to a writer-node inbox (`command` and above).
+ * @param role - token role granted to the pod connection.
+ * @returns true when the role is `command`, `manage`, or `takeover`.
+ */
+export function roleAllowsCommand(role: FederationTokenRole): boolean {
+  switch (role) {
+    case 'command':
+    case 'manage':
+    case 'takeover':
+      return true
+    case 'read':
+      return false
+  }
+}
+
+/** Failure codes for {@link FederationSessionSendResultMessage}. */
+export type FederationSessionSendErrorCode = 'writer-offline' | 'unauthorized' | 'invalid'
+
+/** Deliver a user message into a live writer-node session inbox. */
+export interface FederationSessionSendMessage {
+  /** Discriminant message tag. */
+  type: 'session/send'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** User-role content delivered to the session inbox. */
+  content: ContentBlock[]
+  /**
+   * Idempotency key scoped to `sessionId`. A later send with the same key
+   * returns the first accepted message id and does not enqueue again.
+   */
+  clientMessageId: string
+}
+
+/** Result of a {@link FederationSessionSendMessage}. */
+export interface FederationSessionSendResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/send-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Accepted inbox message id when the send succeeded. */
+  messageId?: string
+  /** Failure code when the send did not enqueue. */
+  code?: FederationSessionSendErrorCode
+  /** Failure message when the send did not enqueue. */
+  error?: string
+}
+
 /** Union of all messages sent over the federation WebSocket connection. */
 export type FederationWireMessage =
   | FederationRegisterMessage
@@ -297,3 +347,5 @@ export type FederationWireMessage =
   | FederationSessionSubscribeMessage
   | FederationSessionStreamEventMessage
   | FederationSessionUnsubscribeMessage
+  | FederationSessionSendMessage
+  | FederationSessionSendResultMessage
