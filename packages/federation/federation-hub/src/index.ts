@@ -16,6 +16,9 @@ export * from './service.ts'
 export * from './server.ts'
 
 export const name = 'federation-hub'
+export const inject = {
+  optional: ['sessionSources'],
+}
 
 /** Config schema for federation hub. */
 export interface Config extends FederationHubConfig {}

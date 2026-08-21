@@ -21,7 +21,7 @@
 
 - [x] 决策 #1：会话源 seam 命名为 `ctx.sessionSources`，Service Definition 归属 `@deepseek-ai/dsh-session-source`，本地实现归属 `@deepseek-ai/dsh-session-source-local`，联邦远端实现归属 `@deepseek-ai/dsh-session-source-federation`
 - [x] T2.1 联邦会话源 seam（Service Definition + 本地实现）
-- [ ] T2.2 hub 管理契约读子集暴露
+- [x] T2.2 hub 管理契约读子集暴露
 - [ ] T2.3 pod 远端源 + 镜像流
 - [ ] T2.4 UI 聚合与降级渲染
 - [ ] T2.5 测试/快照/文档收口

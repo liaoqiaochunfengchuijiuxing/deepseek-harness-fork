@@ -344,4 +344,166 @@ describe('FederationHubServer integration', () => {
     expect(stopMsg.diagnostic).toMatch(/no online pods/)
     clientWs.close()
   })
+
+  it('exposes read session operations (list, get, search, subscribe)', async () => {
+    let streamCallback: ((event: { seq: number; type: string; content: string }) => void) | undefined
+    const mockSources = {
+      listAllSessions: vi.fn().mockResolvedValue([
+        { id: 'session-123', title: 'Test Session', createdAt: 1000, sourceId: 'local', updatedAt: 1000 },
+      ]),
+      getSession: vi.fn().mockResolvedValue({
+        sourceId: 'local',
+        session: {
+          header: { id: 'session-123', version: 0, createdAt: 1000 },
+          events: [{ seq: 0, type: 'session/started' }],
+        },
+      }),
+      searchAllSessions: vi.fn().mockResolvedValue([
+        { id: 'session-123', title: 'Test Session', createdAt: 1000, sourceId: 'local', updatedAt: 1000 },
+      ]),
+      subscribeEvents: vi.fn().mockImplementation(
+        (_sessionId: string, cb: (event: { seq: number; type: string; content: string }) => void) => {
+          streamCallback = cb
+          return () => { streamCallback = undefined }
+        },
+      ),
+    }
+    // Assign to ctx
+    ctx.provide('sessionSources')
+    ;(ctx as unknown as { sessionSources: unknown }).sessionSources = mockSources
+
+    const podWs = new WebSocket(`ws://127.0.0.1:${port}/federation/connect?token=${secretToken}`)
+    await new Promise<void>((res) => { podWs.on('open', () => { res() }) })
+
+    // Register pod
+    podWs.send(JSON.stringify({
+      type: 'federation/register',
+      podId: 'session-client-pod',
+      name: 'Session Client Pod',
+    }))
+
+    await new Promise<void>((res) => {
+      podWs.once('message', () => { res() })
+    })
+
+    // Test session/list
+    podWs.send(JSON.stringify({
+      type: 'session/list',
+      requestId: 'req-list-1',
+    }))
+
+    const listResult = await new Promise<{
+      type: string
+      requestId: string
+      sessions: Array<{ id: string }>
+    }>((resolve) => {
+      podWs.once('message', (data) => {
+        resolve(JSON.parse(rawDataToString(data)) as {
+          type: string
+          requestId: string
+          sessions: Array<{ id: string }>
+        })
+      })
+    })
+
+    expect(listResult.type).toBe('session/list-result')
+    expect(listResult.requestId).toBe('req-list-1')
+    expect(listResult.sessions).toHaveLength(1)
+    expect(listResult.sessions[0]?.id).toBe('session-123')
+
+    // Test session/get
+    podWs.send(JSON.stringify({
+      type: 'session/get',
+      requestId: 'req-get-1',
+      sessionId: 'session-123',
+    }))
+
+    const getResult = await new Promise<{
+      type: string
+      requestId: string
+      session?: { header: { id: string } }
+    }>((resolve) => {
+      podWs.once('message', (data) => {
+        resolve(JSON.parse(rawDataToString(data)) as {
+          type: string
+          requestId: string
+          session?: { header: { id: string } }
+        })
+      })
+    })
+
+    expect(getResult.type).toBe('session/get-result')
+    expect(getResult.requestId).toBe('req-get-1')
+    expect(getResult.session?.header.id).toBe('session-123')
+
+    // Test session/search
+    podWs.send(JSON.stringify({
+      type: 'session/search',
+      requestId: 'req-search-1',
+      query: 'Test',
+    }))
+
+    const searchResult = await new Promise<{
+      type: string
+      requestId: string
+      sessions: Array<{ id: string }>
+    }>((resolve) => {
+      podWs.once('message', (data) => {
+        resolve(JSON.parse(rawDataToString(data)) as {
+          type: string
+          requestId: string
+          sessions: Array<{ id: string }>
+        })
+      })
+    })
+
+    expect(searchResult.type).toBe('session/search-result')
+    expect(searchResult.requestId).toBe('req-search-1')
+    expect(searchResult.sessions).toHaveLength(1)
+
+    // Test session/subscribe & stream event
+    podWs.send(JSON.stringify({
+      type: 'session/subscribe',
+      subscriptionId: 'sub-1',
+      sessionId: 'session-123',
+    }))
+
+    // Wait a tick for subscribe handler to execute
+    await new Promise(r => setTimeout(r, 50))
+    expect(streamCallback).toBeDefined()
+
+    // Trigger an event from the stream
+    streamCallback!({ seq: 1, type: 'user/message', content: 'Hello' })
+
+    const streamMsg = await new Promise<{
+      type: string
+      subscriptionId: string
+      sessionId: string
+      event: { type: string }
+    }>((resolve) => {
+      podWs.once('message', (data) => {
+        resolve(JSON.parse(rawDataToString(data)) as {
+          type: string
+          subscriptionId: string
+          sessionId: string
+          event: { type: string }
+        })
+      })
+    })
+
+    expect(streamMsg.type).toBe('session/stream-event')
+    expect(streamMsg.subscriptionId).toBe('sub-1')
+    expect(streamMsg.sessionId).toBe('session-123')
+    expect(streamMsg.event.type).toBe('user/message')
+
+    // Test session/unsubscribe
+    podWs.send(JSON.stringify({
+      type: 'session/unsubscribe',
+      subscriptionId: 'sub-1',
+    }))
+    await new Promise(r => setTimeout(r, 50))
+    expect(streamCallback).toBeUndefined()
+
+    podWs.close()
+  })
 })

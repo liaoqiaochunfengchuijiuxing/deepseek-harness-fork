@@ -24,6 +24,12 @@
       "path": "../../runtime-diagnostics/invariants"
     },
     {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../session/session-source"
+    },
+    {
       "path": "../../subagent/subagent"
     }
   ]

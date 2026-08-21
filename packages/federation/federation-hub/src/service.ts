@@ -45,6 +45,8 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+import type { SessionSourcesService } from '@deepseek-ai/dsh-session-source'
+
 interface InFlightDelegation {
   podId: string
   runId: string
@@ -64,6 +66,7 @@ interface InternalPodRecord {
 export class FederationHubService extends Service {
   private readonly pods = new Map<string, InternalPodRecord>()
   private readonly delegations = new Map<string, InFlightDelegation>()
+  private readonly subscriptions = new Map<string, () => void>()
 
   constructor(ctx: Context) {
     super(ctx, 'federationHub')
@@ -149,6 +152,14 @@ export class FederationHubService extends Service {
       record.info.status = status
       if (status === 'offline') {
         this.ctx.emit('federation/pod-offline', podId)
+        // Clean up all stream subscriptions for this pod
+        const prefix = `${podId}:`
+        for (const [key, disposer] of this.subscriptions) {
+          if (key.startsWith(prefix)) {
+            disposer()
+            this.subscriptions.delete(key)
+          }
+        }
         // Cancel all pending delegations targeting this pod
         for (const [runId, delegation] of this.delegations) {
           if (delegation.podId === podId) {
@@ -293,6 +304,132 @@ export class FederationHubService extends Service {
             stopReason: 'error',
             diagnostic: message.error.message,
           })
+        }
+        break
+      }
+      case 'session/list': {
+        void (async () => {
+          const record = this.pods.get(podId)
+          if (!record || record.socket.readyState !== 1) return
+          try {
+            const sources = this.ctx.get('sessionSources') ??
+              (this.ctx as unknown as { sessionSources?: SessionSourcesService }).sessionSources
+            const sessions = sources
+              ? await sources.listAllSessions({
+                ...message.cwd !== undefined ? { cwd: message.cwd } : {},
+                ...message.limit !== undefined ? { limit: message.limit } : {},
+              })
+              : []
+            record.socket.send(JSON.stringify({
+              type: 'session/list-result',
+              requestId: message.requestId,
+              sessions,
+            }))
+          } catch (err) {
+            record.socket.send(JSON.stringify({
+              type: 'session/list-result',
+              requestId: message.requestId,
+              sessions: [],
+              error: err instanceof Error ? err.message : String(err),
+            }))
+          }
+        })()
+        break
+      }
+      case 'session/get': {
+        void (async () => {
+          const record = this.pods.get(podId)
+          if (!record || record.socket.readyState !== 1) return
+          try {
+            const sources = this.ctx.get('sessionSources') ??
+              (this.ctx as unknown as { sessionSources?: SessionSourcesService }).sessionSources
+            const result = sources ? await sources.getSession(message.sessionId) : undefined
+            record.socket.send(JSON.stringify({
+              type: 'session/get-result',
+              requestId: message.requestId,
+              session: result?.session,
+            }))
+          } catch (err) {
+            record.socket.send(JSON.stringify({
+              type: 'session/get-result',
+              requestId: message.requestId,
+              error: err instanceof Error ? err.message : String(err),
+            }))
+          }
+        })()
+        break
+      }
+      case 'session/search': {
+        void (async () => {
+          const record = this.pods.get(podId)
+          if (!record || record.socket.readyState !== 1) return
+          try {
+            const sources = this.ctx.get('sessionSources') ??
+              (this.ctx as unknown as { sessionSources?: SessionSourcesService }).sessionSources
+            const sessions = sources
+              ? await sources.searchAllSessions({
+                ...message.query !== undefined ? { query: message.query } : {},
+                ...message.cwd !== undefined ? { cwd: message.cwd } : {},
+                ...message.limit !== undefined ? { limit: message.limit } : {},
+              })
+              : []
+            record.socket.send(JSON.stringify({
+              type: 'session/search-result',
+              requestId: message.requestId,
+              sessions,
+            }))
+          } catch (err) {
+            record.socket.send(JSON.stringify({
+              type: 'session/search-result',
+              requestId: message.requestId,
+              sessions: [],
+              error: err instanceof Error ? err.message : String(err),
+            }))
+          }
+        })()
+        break
+      }
+      case 'session/subscribe': {
+        void (async () => {
+          const record = this.pods.get(podId)
+          if (!record || record.socket.readyState !== 1) return
+          const subKey = `${podId}:${message.subscriptionId}`
+          const existing = this.subscriptions.get(subKey)
+          if (existing) {
+            existing()
+            this.subscriptions.delete(subKey)
+          }
+
+          const sources = this.ctx.get('sessionSources') ??
+            (this.ctx as unknown as { sessionSources?: SessionSourcesService }).sessionSources
+          if (!sources) return
+
+          const disposer = await sources.subscribeEvents(
+            message.sessionId,
+            (event) => {
+              const currentRecord = this.pods.get(podId)
+              if (currentRecord && currentRecord.socket.readyState === 1) {
+                currentRecord.socket.send(JSON.stringify({
+                  type: 'session/stream-event',
+                  subscriptionId: message.subscriptionId,
+                  sessionId: message.sessionId,
+                  event,
+                }))
+              }
+            },
+            message.fromSeq,
+          )
+
+          this.subscriptions.set(subKey, disposer)
+        })()
+        break
+      }
+      case 'session/unsubscribe': {
+        const subKey = `${podId}:${message.subscriptionId}`
+        const disposer = this.subscriptions.get(subKey)
+        if (disposer) {
+          disposer()
+          this.subscriptions.delete(subKey)
         }
         break
       }
