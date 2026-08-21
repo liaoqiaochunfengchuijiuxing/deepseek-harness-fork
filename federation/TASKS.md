@@ -1,6 +1,6 @@
 # Hub-Pod 联邦开发任务书
 
-状态依据与设计决策见 [Agent Note: hub-and-pod federation](../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.zh.md)。本文件把该设计的 v0–v4 分期拆成 PR 粒度的任务；[TODO.md](TODO.md) 是对应的执行清单。
+状态依据与设计决策见 [Agent Note: hub-and-pod federation](../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.zh.md)。本文件把该设计的 v0–v4 分期拆成 PR 粒度的任务；[TODO.md](TODO.md) 是对应的执行清单。从 T5.2 续做时先读 [HANDOFF.md](HANDOFF.md)。
 
 ## 阅读约定
 
@@ -154,11 +154,22 @@ hub 租约表；交接 = flush → release → 新节点 acquire → resume；st
 
 ## M5 peer 与细粒度（v4，可选）
 
-按需启动，不阻塞前四个里程碑：
+按需启动，不阻塞前四个里程碑。续做步骤与陷阱见 [HANDOFF.md](HANDOFF.md)。
 
-- **T5.1** hub 中继 pod↔pod 委派（同一 wire 第三方向）。
-- **T5.2** capability-server 粒度：remote `ctx.fs`/`ctx.subprocess` provider（E2B 形状的联邦变体）。
-- **T5.3** 直连优化（overlay 网络下跳过 hub 中继）。
+### T5.1 hub 中继 pod↔pod 委派
+
+同一 subagent wire 的第三方向。`subagent/start` 携带 `targetPodId`；hub 经目标 pod 已有的 `/federation/connect` 转发 start/chunk/stop/abort。`dsh-subagent-remote` 的 Config `targetPodId` 让调用方点名 peer。未指定时 hub 仍选择一台在线 pod（M1 的 `/federation/subagent` 行为）。已完成。
+
+### T5.2 capability-server 粒度
+
+- **交付**：`packages/federation/fs-federation/`（`ctx.fs`）与 `packages/federation/subprocess-federation/`（`ctx.subprocess`）。执行方仍是目标 pod 上已有的 local fs/subprocess；`dsh-federation-client` 分发 capability RPC。档位①：新包挂现有 seam，不改 tool-fs / tool-bash / agent-loop。
+- **要点**：形状对齐 `packages/e2b/`（共享执行世界 + 两个 adapter），传输走既有 federation WS，不引入 E2B SDK。调用方（hub Cloud 模式或另一 pod）挂联邦 provider **替换**本地 `ctx.fs`/`ctx.subprocess`；`targetPodId` 为 Config 必填，禁止「第一台在线 pod」默认。完整实现 `FileSystem` 与 `SubprocessRuntime` 全部抽象方法（含 `streamText`、collect/pipe `spawn`、`spawnTerminal`）。JSON 线上 `Uint8Array` 用 base64；`FsError` 带 `code` 往返；subprocess handle 用远端 `handleId` 做后续 RPC。凭证与 `DEEPSEEK_API_KEY` 不得出现在 spawn `env` 或 capability 载荷。依赖 T5.1。
+- **测试**：新包单测 + hub 假 socket 中继 + 真 WS e2e（读/写远端文件、collect spawn、目标离线失败、env 负向）。覆盖率按新包 `src/` 每文件 100%。若组合让模型打到 `tool_fs`/`tool_bash`，同 PR 补 keyless 快照。
+- **文档**：两包 README 三件套；`packages/federation/README.md` 与 fs/subprocess 家族 README 各加一行；`gen-doc-graphs` 把两包列入 implementations；Agent Note 写明 remote fs/subprocess 已在树、T5.3 仍未。
+
+### T5.3 直连优化
+
+overlay 网络下跳过 hub 中继。不改变 T5.2 的消息字段与寻址；只替换「经 hub 转发」为直连 socket。依赖 T5.2。
 
 ---
 

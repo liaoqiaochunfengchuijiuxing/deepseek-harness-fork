@@ -73,4 +73,4 @@
 
 ## 起点指令
 
-从 **T1.1（`dsh-subagent-remote` provider）** 开始：先读 `packages/subagent/subagent/src/index.ts` 的 Service Definition 与 `subagent-dsh-sdk` 的 provider 实现，写出包骨架与契约测试（对 mock WS server），再实现连接管理与词汇映射。开工。
+从 **T5.2（remote `ctx.fs` / `ctx.subprocess`）** 开始。先读 [HANDOFF.md](HANDOFF.md) 与 [TASKS.md](TASKS.md) 的 T5.2 节，再读 E2B 家族与 `FileSystem` / `SubprocessRuntime` 定义；开 `packages/federation/fs-federation/` 与 `subprocess-federation/`，不要改 agent-loop。T5.1 已合并（`targetPodId` 中继）。T1.1–T4.4 已完成。
