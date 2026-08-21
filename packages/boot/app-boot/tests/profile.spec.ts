@@ -152,6 +152,7 @@ describe('loadProfile', () => {
     // cannot be asserted to fail here: the source-plane test runner resolves
     // @deepseek-ai/* through tsconfig paths regardless of the staged anchor.
     expect(PROFILE_TEMPLATES.web).toContain('@deepseek-ai/dsh-base')
+    expect(PROFILE_TEMPLATES.federation).toContain('@deepseek-ai/dsh-federation-hub')
     try {
       loadProfile('t', 'web', anchor, home)
     } catch {
@@ -159,6 +160,13 @@ describe('loadProfile', () => {
     }
     expect(readProfileManifest('t', resolveProfileDir('web', home)).dsh?.profile?.bundles)
       .toEqual([...PROFILE_TEMPLATES.web ?? []])
+    try {
+      loadProfile('t', 'federation', anchor, home)
+    } catch {
+      // Resolution failure is the plain-Node outcome for this empty anchor.
+    }
+    expect(readProfileManifest('t', resolveProfileDir('federation', home)).dsh?.profile?.bundles)
+      .toEqual([...PROFILE_TEMPLATES.federation ?? []])
   })
 
   it('normalizes only the exact installation-owned headless bundle tuple', () => {

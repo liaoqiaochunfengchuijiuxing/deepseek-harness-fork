@@ -1,0 +1,8 @@
+# Federation Hub Profile Bundle: mounts the central federation control-plane service.
+- insert:
+    - id: federation-hub
+      name: '@deepseek-ai/dsh-federation-hub'
+      config:
+        port: !!js process.env.DSH_FEDERATION_PORT ? Number(process.env.DSH_FEDERATION_PORT) : 3080
+        host: !!js process.env.DSH_FEDERATION_HOST || '127.0.0.1'
+        token: !!js process.env.DSH_FEDERATION_TOKEN

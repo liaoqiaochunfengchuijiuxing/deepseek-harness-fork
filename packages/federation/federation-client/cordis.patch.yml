@@ -1,0 +1,9 @@
+# Federation Client Profile Bundle: mounts the outbound edge pod client plugin.
+- insert:
+    - id: federation-client
+      name: '@deepseek-ai/dsh-federation-client'
+      config:
+        endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT || 'ws://127.0.0.1:3080/federation/connect'
+        podId: !!js process.env.DSH_POD_ID || 'pod-local'
+        name: !!js process.env.DSH_POD_NAME || 'Local Pod'
+        token: !!js process.env.DSH_POD_TOKEN

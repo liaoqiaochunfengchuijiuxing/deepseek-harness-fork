@@ -1,0 +1,8 @@
+# Subagent Remote provider patch: registers the remote subagent provider on ctx.subagents.
+- insert:
+    - id: subagent-remote
+      name: '@deepseek-ai/dsh-subagent-remote'
+      config:
+        providerName: remote
+        endpoint: !!js process.env.DSH_FEDERATION_SUBAGENT_ENDPOINT || 'ws://127.0.0.1:3080/federation/subagent'
+        token: !!js process.env.DSH_FEDERATION_TOKEN
