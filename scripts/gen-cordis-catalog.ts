@@ -68,6 +68,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   directoryPicker: 'workspace.md',
   dynamicCordisRunner: 'extensions.md',
   e2b: 'subprocess.md',
+  federationHub: 'subagent.md',
   fileReferences: 'session-reference.md',
   fs: 'filesystem.md',
   goals: 'goal.md',
@@ -174,6 +175,7 @@ export const EVENT_SCOPE_PAGE: Record<string, string> = {
   'cordis': 'extensions.md',
   'credentials': 'credentials.md',
   'domain': 'storage.md',
+  'federation': 'subagent.md',
   'fs': 'filesystem.md',
   'goal': 'goal.md',
   'llm': 'llm-streaming.md',
@@ -337,6 +339,13 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   LlmRuntime: 'llm-streaming.md',
   StreamChunk: 'llm-streaming.md',
   SkillProviderControl: 'skills.md',
+  PodInfo: 'subagent.md',
+  PodCapabilities: 'subagent.md',
+  PodStatus: 'subagent.md',
+  FederationTokenRole: 'subagent.md',
+  FederationWireMessage: 'subagent.md',
+  RemoteSubagentStartMessage: 'subagent.md',
+  RemoteSubagentStopMessage: 'subagent.md',
   CreateSessionOptions: 'persistence.md',
   PrepareSessionOptions: 'persistence.md',
   SessionHeader: 'persistence.md',
@@ -519,6 +528,7 @@ export const FOUNDATION_TYPE_NAMES: ReadonlySet<string> = new Set([
   'Record',
   'Readonly',
   'Uint8Array',
+  'WebSocket',
 ])
 
 /** Project types deliberately documented outside the subsystems catalog. */

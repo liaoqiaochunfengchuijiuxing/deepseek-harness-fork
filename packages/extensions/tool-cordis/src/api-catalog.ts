@@ -642,6 +642,61 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'federationHub',
+    summary: 'Service managing connected pods and message routing across the federation hub.',
+    description: 'Service managing connected pods and message routing across the federation hub.',
+    methods: [
+      {
+        signature: 'listPods(): PodInfo[]',
+        description: 'List all currently registered pods.',
+        parameters: [],
+        returns: 'Array of pod information records.',
+      },
+      {
+        signature: 'getPod(podId: string): PodInfo | undefined',
+        description: 'Get information for a specific pod by ID.',
+        parameters: [{ name: 'podId', description: 'the target pod identifier.' }],
+        returns: 'Pod info or undefined if not registered.',
+      },
+      {
+        signature: 'registerPod( podId: string, name: string, capabilities: PodCapabilities, role: FederationTokenRole, socket: WebSocket, ): void',
+        description: 'Register or update a connected pod.',
+        parameters: [{ name: 'podId', description: 'unique pod identifier.' }, { name: 'name', description: 'human-readable name.' }, { name: 'capabilities', description: 'declared capabilities.' }, { name: 'role', description: 'token permission role.' }, { name: 'socket', description: 'active WebSocket connection to the pod.' }],
+      },
+      {
+        signature: 'touchHeartbeat(podId: string): void',
+        description: 'Update the heartbeat timestamp for a pod.',
+        parameters: [{ name: 'podId', description: 'pod identifier.' }],
+      },
+      {
+        signature: 'setPodStatus(podId: string, status: PodStatus): void',
+        description: 'Set online/offline status for a pod.',
+        parameters: [{ name: 'podId', description: 'pod identifier.' }, { name: 'status', description: 'new status.' }],
+      },
+      {
+        signature: 'unregisterPod(podId: string): void',
+        description: 'Unregister a pod and close its connection.',
+        parameters: [{ name: 'podId', description: 'pod identifier.' }],
+      },
+      {
+        signature: 'async delegateToPod( podId: string, request: RemoteSubagentStartMessage, onChunk?: (delta: string) => void, ): Promise<RemoteSubagentStopMessage>',
+        description: 'Delegate a subagent run to a connected pod over WebSocket.',
+        parameters: [{ name: 'podId', description: 'target pod identifier.' }, { name: 'request', description: 'subagent start message.' }, { name: 'onChunk', description: 'optional chunk callback for streaming text.' }],
+        returns: 'Subagent stop message from the pod.',
+      },
+      {
+        signature: 'cancelPodDelegation(podId: string, runId: string, reason?: string): void',
+        description: 'Cancel an in-flight subagent run on a pod.',
+        parameters: [{ name: 'podId', description: 'target pod identifier.' }, { name: 'runId', description: 'run identifier.' }, { name: 'reason', description: 'optional cancellation reason.' }],
+      },
+      {
+        signature: 'handlePodMessage(podId: string, message: FederationWireMessage): void',
+        description: 'Process an incoming message received from a pod socket.',
+        parameters: [{ name: 'podId', description: 'identifier of the sender pod.' }, { name: 'message', description: 'parsed wire message.' }],
+      },
+    ],
+  },
+  {
     key: 'fileReferences',
     summary: 'Host capability for cancellable file-reference discovery.',
     description: 'Host capability for cancellable file-reference discovery.',
@@ -2461,6 +2516,30 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'change', description: 'domain, table (`\'\'` for global), key (`\'\'` for global), operation discriminant, and on `put` the new snapshot.' }],
   },
   {
+    name: 'federation/pod-offline',
+    mode: 'emit',
+    signature: '\'federation/pod-offline\': (podId: string) => void',
+    summary: 'Emitted when a registered pod is marked offline due to heartbeat timeout or socket close.',
+    description: 'Emitted when a registered pod is marked offline due to heartbeat timeout or socket close.',
+    parameters: [{ name: 'podId', description: 'Identifier of the offline pod.' }],
+  },
+  {
+    name: 'federation/pod-registered',
+    mode: 'emit',
+    signature: '\'federation/pod-registered\': (pod: PodInfo) => void',
+    summary: 'Emitted when a pod completes handshake and registers with the hub.',
+    description: 'Emitted when a pod completes handshake and registers with the hub.',
+    parameters: [{ name: 'pod', description: 'Registered pod information.' }],
+  },
+  {
+    name: 'federation/pod-unregistered',
+    mode: 'emit',
+    signature: '\'federation/pod-unregistered\': (podId: string) => void',
+    summary: 'Emitted when a pod is explicitly removed from the registry.',
+    description: 'Emitted when a pod is explicitly removed from the registry.',
+    parameters: [{ name: 'podId', description: 'Identifier of the unregistered pod.' }],
+  },
+  {
     name: 'fs/edit-intent',
     mode: 'waterfall',
     signature: '\'fs/edit-intent\'(target: FsTarget, actor: object | undefined, next: () => { version: FsVersion } | undefined | Promise<{ version: FsVersion } | undefined>): Promise<{ version: FsVersion } | undefined>',
@@ -3149,6 +3228,38 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface EpochHeader {\n    config: LlmCallConfig;\n    adapterDefaults?: LlmCallConfigAdapterDefaults;\n    system?: string;\n    tools?: ToolSchema[];\n}',
   },
   {
+    name: 'FederationHeartbeatAckMessage',
+    declaration: 'export interface FederationHeartbeatAckMessage {\n    type: \'federation/heartbeat_ack\';\n    timestamp: number;\n}',
+  },
+  {
+    name: 'FederationHeartbeatMessage',
+    declaration: 'export interface FederationHeartbeatMessage {\n    type: \'federation/heartbeat\';\n    podId: string;\n}',
+  },
+  {
+    name: 'FederationPingMessage',
+    declaration: 'export interface FederationPingMessage {\n    type: \'ping\';\n}',
+  },
+  {
+    name: 'FederationPongMessage',
+    declaration: 'export interface FederationPongMessage {\n    type: \'pong\';\n}',
+  },
+  {
+    name: 'FederationRegisteredMessage',
+    declaration: 'export interface FederationRegisteredMessage {\n    type: \'federation/registered\';\n    podId: string;\n    hubVersion: string;\n}',
+  },
+  {
+    name: 'FederationRegisterMessage',
+    declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    name: string;\n    capabilities?: PodCapabilities;\n}',
+  },
+  {
+    name: 'FederationTokenRole',
+    declaration: 'export type FederationTokenRole = \'read\' | \'command\' | \'manage\' | \'takeover\';',
+  },
+  {
+    name: 'FederationWireMessage',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage;',
+  },
+  {
     name: 'FileDiff',
     declaration: 'export interface FileDiff {\n    path: string;\n    oldText: string | null;\n    newText: string;\n}',
   },
@@ -3599,6 +3710,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PermissionSelect',
     declaration: 'export interface PermissionSelect {\n    options: PresetOption[];\n    currentValue: string;\n}',
+  },
+  {
+    name: 'PodCapabilities',
+    declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    supportedTools?: string[];\n    tags?: Record<string, string>;\n}',
+  },
+  {
+    name: 'PodInfo',
+    declaration: 'export interface PodInfo {\n    podId: string;\n    name: string;\n    capabilities: PodCapabilities;\n    role: FederationTokenRole;\n    status: PodStatus;\n    lastHeartbeat: number;\n}',
+  },
+  {
+    name: 'PodStatus',
+    declaration: 'export type PodStatus = \'online\' | \'offline\';',
   },
   {
     name: 'PostToolDecision',

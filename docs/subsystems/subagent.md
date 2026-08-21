@@ -482,6 +482,82 @@ The spawn and fork backends create an ordinary one-shot agent through `parent.ct
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — this section is byte-identical in both language sides of the page. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxfederationhub--federationhubservice"></a>
+
+### `ctx.federationHub` — `FederationHubService`
+
+Service managing connected pods and message routing across the federation hub.
+
+```ts cordis-catalog
+/**
+ * List all currently registered pods.
+ * @returns Array of pod information records.
+ */
+listPods(): PodInfo[]
+
+/**
+ * Get information for a specific pod by ID.
+ * @param podId - the target pod identifier.
+ * @returns Pod info or undefined if not registered.
+ */
+getPod(podId: string): PodInfo | undefined
+
+/**
+ * Register or update a connected pod.
+ * @param podId - unique pod identifier.
+ * @param name - human-readable name.
+ * @param capabilities - declared capabilities.
+ * @param role - token permission role.
+ * @param socket - active WebSocket connection to the pod.
+ */
+registerPod( podId: string, name: string, capabilities: PodCapabilities, role: FederationTokenRole, socket: WebSocket, ): void
+
+/**
+ * Update the heartbeat timestamp for a pod.
+ * @param podId - pod identifier.
+ */
+touchHeartbeat(podId: string): void
+
+/**
+ * Set online/offline status for a pod.
+ * @param podId - pod identifier.
+ * @param status - new status.
+ */
+setPodStatus(podId: string, status: PodStatus): void
+
+/**
+ * Unregister a pod and close its connection.
+ * @param podId - pod identifier.
+ */
+unregisterPod(podId: string): void
+
+/**
+ * Delegate a subagent run to a connected pod over WebSocket.
+ * @param podId - target pod identifier.
+ * @param request - subagent start message.
+ * @param onChunk - optional chunk callback for streaming text.
+ * @returns Subagent stop message from the pod.
+ */
+async delegateToPod( podId: string, request: RemoteSubagentStartMessage, onChunk?: (delta: string) => void, ): Promise<RemoteSubagentStopMessage>
+
+/**
+ * Cancel an in-flight subagent run on a pod.
+ * @param podId - target pod identifier.
+ * @param runId - run identifier.
+ * @param reason - optional cancellation reason.
+ */
+cancelPodDelegation(podId: string, runId: string, reason?: string): void
+
+/**
+ * Process an incoming message received from a pod socket.
+ * @param podId - identifier of the sender pod.
+ * @param message - parsed wire message.
+ */
+handlePodMessage(podId: string, message: FederationWireMessage): void
+```
+
+Source: [`packages/federation/federation-hub/src/service.ts:64`](../../packages/federation/federation-hub/src/service.ts)
+
 <a id="ctxsubagents--subagentruntime"></a>
 
 ### `ctx.subagents` — `SubagentRuntime`
@@ -666,6 +742,61 @@ async start(name: string, request: SubagentStartRequest): Promise<SubagentRun>
 Types: [Agent](core.md) · [ContentBlock](llm-streaming.md) · [MessageId](llm-streaming.md) · [SessionId](core.md)
 
 Source: [`packages/subagent/subagent/src/index.ts:171`](../../packages/subagent/subagent/src/index.ts)
+
+<a id="federation-events"></a>
+
+### `federation/*` events
+
+<a id="federationpod-offline--emit"></a>
+
+#### `federation/pod-offline` — emit
+
+Emitted when a registered pod is marked offline due to heartbeat timeout or socket close.
+
+```ts cordis-catalog
+/**
+ * Emitted when a registered pod is marked offline due to heartbeat timeout or socket close.
+ * @mode emit
+ * @param podId - Identifier of the offline pod.
+ */
+'federation/pod-offline': (podId: string) => void
+```
+
+Source: [`packages/federation/federation-hub/src/service.ts:38`](../../packages/federation/federation-hub/src/service.ts)
+
+<a id="federationpod-registered--emit"></a>
+
+#### `federation/pod-registered` — emit
+
+Emitted when a pod completes handshake and registers with the hub.
+
+```ts cordis-catalog
+/**
+ * Emitted when a pod completes handshake and registers with the hub.
+ * @mode emit
+ * @param pod - Registered pod information.
+ */
+'federation/pod-registered': (pod: PodInfo) => void
+```
+
+Source: [`packages/federation/federation-hub/src/service.ts:32`](../../packages/federation/federation-hub/src/service.ts)
+
+<a id="federationpod-unregistered--emit"></a>
+
+#### `federation/pod-unregistered` — emit
+
+Emitted when a pod is explicitly removed from the registry.
+
+```ts cordis-catalog
+/**
+ * Emitted when a pod is explicitly removed from the registry.
+ * @mode emit
+ * @param podId - Identifier of the unregistered pod.
+ */
+'federation/pod-unregistered': (podId: string) => void
+```
+
+Source: [`packages/federation/federation-hub/src/service.ts:44`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="subagent-events"></a>
 

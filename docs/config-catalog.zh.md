@@ -631,6 +631,48 @@ export interface Config {
 
 来源：[`packages/experimental/tool-agent-team/src/index.ts:17`](../packages/experimental/tool-agent-team/src/index.ts)
 
+<a id="deepseek-aidsh-federation-hub"></a>
+
+## `@deepseek-ai/dsh-federation-hub`
+
+```ts config-catalog
+/** Config schema for federation hub. */
+export interface Config extends FederationHubConfig {}
+
+/** Configuration for FederationHubServer. */
+export interface FederationHubConfig {
+  /** Listen port (0 for auto/test, default 3080). */
+  port?: number
+  /** Listen host (default '127.0.0.1'). */
+  host?: string
+  /** WebSocket path for pod connections (default '/federation/connect'). */
+  path?: string
+  /** WebSocket path for incoming subagent delegations (default '/federation/subagent'). */
+  subagentPath?: string
+  /** Heartbeat timeout in milliseconds before marking a pod offline (default 30000). */
+  heartbeatTimeoutMs?: number
+  /** Configured static tokens and their permission roles. */
+  tokens?: Record<string, TokenConfig>
+  /** Whether to allow anonymous unauthenticated connections (default false). */
+  allowAnonymous?: boolean
+  /** Single admin / default token for convenience. */
+  token?: string
+}
+
+/** Token configuration entry. */
+export interface TokenConfig {
+  /** Permission level granted by this token. */
+  role: FederationTokenRole
+  /** Optional restriction to a specific pod identifier. */
+  podId?: string
+}
+
+/** Token authorization permission level for federation. */
+export type FederationTokenRole = 'read' | 'command' | 'manage' | 'takeover'
+```
+
+来源：[`packages/federation/federation-hub/src/index.ts:21`](../packages/federation/federation-hub/src/index.ts)
+
 <a id="deepseek-aidsh-file-reference-local"></a>
 
 ## `@deepseek-ai/dsh-file-reference-local`
