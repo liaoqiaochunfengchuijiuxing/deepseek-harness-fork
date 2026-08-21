@@ -107,12 +107,21 @@ export async function inspectApiRemoteSession(
   }
 
   const sources = ctx.get('sessionSources') as {
-    getSession?: (id: SessionId) => Promise<{ header: SessionHeader; events: SessionEvent[] } | undefined>
+    getSession?: (id: SessionId) => Promise<
+      | { source?: unknown; session?: { header: SessionHeader; events: SessionEvent[] } }
+      | { header: SessionHeader; events: SessionEvent[] }
+      | undefined
+    >
   } | undefined
   if (sources?.getSession !== undefined) {
     const remote = await sources.getSession(sessionId)
     if (remote !== undefined) {
-      return { meta: remote.header, events: [...remote.events] }
+      const inspection = 'session' in remote && remote.session !== undefined
+        ? remote.session
+        : (remote as { header: SessionHeader; events: SessionEvent[] })
+      if (inspection && inspection.header !== undefined && Array.isArray(inspection.events)) {
+        return { meta: inspection.header, events: [...inspection.events] }
+      }
     }
   }
 
@@ -170,6 +179,20 @@ export function createApiRemoteAgentResolver(
           if (publishedSession !== undefined
             && hasApiRemoteSubagentOwner(ctx, publishedSession, publishedAgent)) {
             throw new ApiRemoteSubagentSessionOwnership(sessionId)
+          }
+          // `agents.resume` prepares from the local durable store only, so a
+          // session whose events live in a remote source must be materialized
+          // locally before resume.
+          const persistence = ctx.get('sessionPersistence')
+          if (persistence !== undefined) {
+            const list = await persistence.list()
+            const existsLocally = list.some(candidate => candidate.id === sessionId)
+            if (!existsLocally) {
+              await persistence.create(inspected.meta)
+              if (inspected.events.length > 0) {
+                await persistence.append(sessionId, inspected.events)
+              }
+            }
           }
           const handle = await ctx.agents.resume({
             resumeSessionId: sessionId,

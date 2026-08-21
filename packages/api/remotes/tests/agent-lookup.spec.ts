@@ -111,6 +111,42 @@ describe('API Remote Agent resolver races', () => {
     }
   })
 
+  it('materializes a session-source session before cold resume for both remote shapes', async () => {
+    for (const wrapped of [true, false]) {
+      const ctx = await createContext()
+      const sessionId = sid(`remote-source-${wrapped ? 'wrapped' : 'bare'}`)
+      const meta = header(sessionId)
+      const events = [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } }] as SessionEvent[]
+      const created: SessionHeader[] = []
+      const appended: SessionEvent[][] = []
+      ctx.provide('sessionPersistence', {
+        list: () => Promise.resolve([]),
+        create: (candidate: SessionHeader) => { created.push(candidate); return Promise.resolve() },
+        append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+          appended.push([...batch])
+          return Promise.resolve()
+        },
+      } as never)
+      ctx.provide('sessionSources', {
+        getSession: () => Promise.resolve(wrapped
+          ? { source: {}, session: { header: meta, events } }
+          : { header: meta, events }),
+      } as never)
+      let published: Session | undefined
+      vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
+        published = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
+        return { agent: stubAgent(ctx, published), dispose: () => Promise.resolve() }
+      })
+
+      const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
+
+      expect(result).toMatchObject({ agent: { id: sessionId } })
+      expect(created).toEqual([meta])
+      expect(appended).toEqual([events])
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('uses the shared cold-resume policy for the Agent Host Context', async () => {
     const ctx = await createContext()
     const sessionId = sid('context-cold-resume')
