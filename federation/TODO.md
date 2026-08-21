@@ -14,7 +14,7 @@
 - [x] T1.2 `dsh-federation-hub` 服务包（注册表/WS/鉴权/委派端）
 - [x] T1.3 `dsh-federation-client` pod 插件（外拨/能力声明/执行）
 - [x] T1.4 组合层：federation profile + pod 组合
-- [ ] T1.5 双进程 e2e + keyless 快照
+- [x] T1.5 双进程 e2e + keyless 快照
 - [ ] T1.6 文档与 Agent Note 收口
 
 ## M2 只读原生体验（v1）

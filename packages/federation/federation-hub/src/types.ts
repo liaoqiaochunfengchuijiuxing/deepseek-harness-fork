@@ -16,6 +16,8 @@ export interface PodCapabilities {
   /** Supported sandbox modes (e.g. 'local', 'seatbelt', 'landlock', 'bwrap'). */
   sandboxModes?: string[]
   /** Supported tool names. */
+  tools?: string[]
+  /** Supported tool names (alias). */
   supportedTools?: string[]
   /** Custom capability tags or environment descriptors. */
   tags?: Record<string, string>

@@ -3738,7 +3738,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'PodCapabilities',
-    declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    supportedTools?: string[];\n    tags?: Record<string, string>;\n}',
+    declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    tools?: string[];\n    supportedTools?: string[];\n    tags?: Record<string, string>;\n}',
   },
   {
     name: 'PodConnectionStatus',
