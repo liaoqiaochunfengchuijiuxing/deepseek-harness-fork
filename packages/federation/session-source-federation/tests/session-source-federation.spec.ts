@@ -3,11 +3,14 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionSourcesService } from '@deepseek-ai/dsh-session-source'
+import { oneTurnLog } from '../../../session/session-persistence/tests/contract.ts'
 import {
   FederationSessionSource,
+  SESSION_CONTINUITY_NOTICE,
   apply,
+  assertForkCompatible,
   rawDataToString,
 } from '../src/index.ts'
 
@@ -66,10 +69,32 @@ describe('FederationSessionSource', () => {
             ws.send(JSON.stringify({
               type: 'session/get-result',
               requestId: parsed.requestId,
-              session: {
-                header: { id: parsed.sessionId, version: 0, createdAt: 1000 },
-                events: [{ seq: 0, type: 'session/started' }],
-              },
+              session: parsed.sessionId === 'sess-fork'
+                ? {
+                  header: { id: parsed.sessionId, version: 0, createdAt: 1000, cwd: '/workspace/app' },
+                  events: oneTurnLog(),
+                }
+                : parsed.sessionId === 'sess-empty-fork'
+                  ? {
+                    header: { id: parsed.sessionId, version: 0, createdAt: 1000 },
+                    events: [],
+                  }
+                  : parsed.sessionId === 'sess-missing'
+                    ? undefined
+                    : {
+                      header: { id: parsed.sessionId, version: 0, createdAt: 1000 },
+                      events: [{ seq: 0, type: 'session/started' }],
+                    },
+            }))
+          } else if (parsed.type === 'session/persist') {
+            ws.send(JSON.stringify({
+              type: 'session/persist-result',
+              requestId: parsed.requestId,
+              ...parsed.sessionId === 'sess-fail-push'
+                ? { error: 'rejected' }
+                : parsed.sessionId === 'sess-silent-push'
+                  ? {}
+                  : { lastSeq: 5 },
             }))
           } else if (parsed.type === 'session/search') {
             if (parsed.query === 'hang') return
@@ -129,6 +154,7 @@ describe('FederationSessionSource', () => {
     expect(source.name).toBe('Test Hub')
     expect(source.kind).toBe('remote')
     expect(source.capabilities.canWrite).toBe(false)
+    expect(source.capabilities.canFork).toBe(true)
     expect(source.capabilities.canSearch).toBe(true)
     expect(source.online).toBe(false)
 
@@ -455,5 +481,102 @@ describe('FederationSessionSource', () => {
     stop()
     expect(await source.searchSessions({})).toEqual([])
     source.dispose()
+  })
+
+  it('refuses unknown required event types on fork', () => {
+    expect(() => {
+      assertForkCompatible(
+        [{ type: 'session/started', seq: 0, time: 1, data: {} }] as never,
+        0,
+      )
+    }).toThrow(/unknown required event type/)
+    expect(() => {
+      assertForkCompatible(oneTurnLog(), 1)
+    }).toThrow(/log format/)
+    expect(() => {
+      assertForkCompatible(
+        [{ type: 'future/x', seq: 0, time: 1, data: {}, ignorable: true }] as never,
+        0,
+      )
+    }).not.toThrow()
+    expect(SESSION_CONTINUITY_NOTICE).toMatch(/not work continuity/)
+  })
+
+  it('forks a hub session into local persistence with matching derived messages', async () => {
+    const created: unknown[] = []
+    const appended: unknown[] = []
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    ctx.provide('sessionPersistence', {
+      create: async (header: unknown) => { created.push(header) },
+      append: async (id: unknown, events: unknown) => { appended.push({ id, events }) },
+      inspect: async () => ({ meta: { id: 'local-1', version: 0 }, events: oneTurnLog() }),
+    })
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    }, ctx)
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+    await expect(source.forkSession(SessionId('sess-missing'))).rejects.toThrow(/was not found/)
+    await expect(source.forkSession(SessionId('sess-remote-1'))).rejects.toThrow(/unknown required event type/)
+    const forkedId = await source.forkSession(SessionId('sess-fork'), '/workspace/forked')
+    expect(created).toHaveLength(1)
+    expect((created[0] as { cwd: string; parentSession: string }).cwd).toBe('/workspace/forked')
+    expect((created[0] as { parentSession: string }).parentSession).toBe('sess-fork')
+    expect(appended).toHaveLength(1)
+    const hub = Session.create(SessionId('sess-fork'), oneTurnLog())
+    const local = Session.create(forkedId, oneTurnLog())
+    expect(local.deriveMessages()).toEqual(hub.deriveMessages())
+    await source.forkSession(SessionId('sess-empty-fork'))
+    source.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('pushes a local session to hub persistence and refuses missing persistence', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    ctx.provide('sessionPersistence', {
+      inspect: async (id: SessionId) => {
+        if (String(id) === 'sess-fail-push') {
+          return { meta: { id, version: 0, createdAt: 1 }, events: oneTurnLog() }
+        }
+        if (String(id) === 'sess-unknown') {
+          return {
+            meta: { id, version: 0, createdAt: 1 },
+            events: [{ type: 'future/unknown', seq: 0, time: 1, data: {} }],
+          }
+        }
+        if (String(id) === 'sess-silent-push') {
+          return { meta: { id, version: 0, createdAt: 1 }, events: oneTurnLog() }
+        }
+        return { meta: { id, version: 0, createdAt: 1, cwd: '/tmp' }, events: oneTurnLog() }
+      },
+    })
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    }, ctx)
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+    serverWs?.send(JSON.stringify({ type: 'session/persist-result', requestId: 1 }))
+    serverWs?.send(JSON.stringify({ type: 'session/persist-result', requestId: 'nobody' }))
+    await source.pushSession(SessionId('sess-ok'))
+    await expect(source.pushSession(SessionId('sess-fail-push'))).rejects.toThrow(/rejected/)
+    await expect(source.pushSession(SessionId('sess-unknown'))).rejects.toThrow(/unknown required event type/)
+    await expect(source.pushSession(SessionId('sess-silent-push'))).rejects.toThrow(/session persist failed/)
+    source.dispose()
+    const bare = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    })
+    await expect(bare.forkSession(SessionId('sess-fork'))).rejects.toThrow(/SessionPersistence is not configured/)
+    await expect(bare.pushSession(SessionId('sess-ok'))).rejects.toThrow(/SessionPersistence is not configured/)
+    bare.dispose()
+    await ctx.fiber.dispose()
   })
 })

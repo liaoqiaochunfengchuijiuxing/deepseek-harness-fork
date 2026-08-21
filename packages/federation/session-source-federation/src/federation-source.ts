@@ -7,7 +7,15 @@
 
 import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { Context } from '@deepseek-ai/cordis'
+import {
+  KNOWN_SESSION_EVENT_TYPES,
+  SESSION_FORMAT_VERSION,
+  SessionId,
+  type SessionEvent,
+  type SessionHeader,
+} from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {
   SessionInspectionResult,
   SessionSearchFilter,
@@ -16,6 +24,29 @@ import type {
   SessionSummary,
 } from '@deepseek-ai/dsh-session-source'
 import type { FederationSessionSourceConfig } from './types.ts'
+
+/** Shown after fork-to-local: the log is copied, workspace files are not. */
+export const SESSION_CONTINUITY_NOTICE =
+  'Session continuity is not work continuity: workspace files are not carried by session sync.'
+
+/**
+ * Refuse a log that this build cannot reconstruct.
+ * @param events - candidate events.
+ * @param formatVersion - writer format version.
+ */
+export function assertForkCompatible(events: readonly SessionEvent[], formatVersion: number): void {
+  if (formatVersion !== SESSION_FORMAT_VERSION) {
+    throw new Error(
+      `federated session uses log format v${formatVersion}, this harness reads v${SESSION_FORMAT_VERSION}`,
+    )
+  }
+  for (const event of events) {
+    if (event.ignorable === true) continue
+    if (!KNOWN_SESSION_EVENT_TYPES.has(event.type)) {
+      throw new Error(`federated session contains unknown required event type ${event.type} at seq ${event.seq}`)
+    }
+  }
+}
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -52,7 +83,7 @@ export class FederationSessionSource implements SessionSource {
   readonly kind = 'remote' as const
   readonly capabilities: SessionSourceCapabilities = {
     canWrite: false,
-    canFork: false,
+    canFork: true,
     canDelete: false,
     canRename: false,
     canSearch: true,
@@ -66,7 +97,10 @@ export class FederationSessionSource implements SessionSource {
   private readonly activeSubscriptions = new Map<string, ActiveSubscription>()
   private cachedSummaries: SessionSummary[] = []
 
-  constructor(private readonly config: FederationSessionSourceConfig) {
+  constructor(
+    private readonly config: FederationSessionSourceConfig,
+    private readonly ctx?: Context,
+  ) {
     this.id = config.sourceId ?? 'federation-hub'
     this.name = config.sourceName ?? 'Hub Sessions'
   }
@@ -254,6 +288,16 @@ export class FederationSessionSource implements SessionSource {
         }
         break
       }
+      case 'session/persist-result': {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const req = this.pendingRequests.get(requestId)
+        if (req) {
+          clearTimeout(req.timer)
+          this.pendingRequests.delete(requestId)
+          req.resolve(msg)
+        }
+        break
+      }
       case 'session/stream-event': {
         const subscriptionId = typeof msg.subscriptionId === 'string' ? msg.subscriptionId : ''
         const sub = this.activeSubscriptions.get(subscriptionId)
@@ -432,5 +476,62 @@ export class FederationSessionSource implements SessionSource {
     }
 
     return Promise.resolve(disposer)
+  }
+
+  /**
+   * Copy a hub session into local persistence as a new child session.
+   * @param id - hub session to copy.
+   * @param targetCwd - optional working directory for the fork.
+   * @returns the new local session id.
+   */
+  async forkSession(id: SessionId, targetCwd?: string): Promise<SessionId> {
+    const persistence = this.ctx?.get('sessionPersistence')
+    if (!persistence) {
+      throw new Error('cannot fork session: SessionPersistence is not configured')
+    }
+    const source = await this.getSession(id)
+    if (source === undefined) {
+      throw new Error(`federated session "${id}" was not found`)
+    }
+    assertForkCompatible(source.events, source.header.version)
+    const newId = SessionId(randomUUID())
+    const resolvedCwd = targetCwd ?? source.header.cwd
+    const newHeader: SessionHeader = {
+      version: SESSION_FORMAT_VERSION,
+      id: newId,
+      createdAt: Date.now(),
+      ...resolvedCwd !== undefined ? { cwd: resolvedCwd } : {},
+      parentSession: id,
+      delegationDepth: (source.header.delegationDepth ?? 0) + 1,
+    }
+    await persistence.create(newHeader)
+    if (source.events.length > 0) {
+      await persistence.append(newId, source.events)
+    }
+    return newId
+  }
+
+  /**
+   * Upload a local session log to hub persistence.
+   * @param id - local session to upload.
+   */
+  async pushSession(id: SessionId): Promise<void> {
+    const persistence = this.ctx?.get('sessionPersistence')
+    if (!persistence) {
+      throw new Error('cannot push session: SessionPersistence is not configured')
+    }
+    const inspection = await persistence.inspect(id)
+    assertForkCompatible(inspection.events, inspection.meta.version)
+    const result = await this.requestWithTimeout<{ lastSeq?: number; error?: string; code?: string }>(
+      'session/persist',
+      {
+        sessionId: id,
+        header: inspection.meta,
+        events: inspection.events,
+      },
+    )
+    if (typeof result.lastSeq !== 'number') {
+      throw new Error(result.error ?? 'session persist failed')
+    }
   }
 }

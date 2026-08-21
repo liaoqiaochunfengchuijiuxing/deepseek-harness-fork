@@ -39,7 +39,7 @@ export const Config: Schema<Config> = Schema.object({
  * @param config - federation session source configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const source = new FederationSessionSource(config)
+  const source = new FederationSessionSource(config, ctx)
 
   ctx.effect(() => {
     source.start()

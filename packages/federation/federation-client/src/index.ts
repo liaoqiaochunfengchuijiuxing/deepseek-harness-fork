@@ -11,11 +11,15 @@ import type {} from '@deepseek-ai/dsh-commands'
 import { FederationPodClient, type FederationClientConfig } from './client.ts'
 import { FederationClientService } from './service.ts'
 import { executeRemoteSend } from './remote-send.ts'
+import { executeForkToLocal } from './fork-to-local.ts'
+import { executePushToHub } from './push-to-hub.ts'
 
 export * from './types.ts'
 export * from './client.ts'
 export * from './service.ts'
 export * from './remote-send.ts'
+export * from './fork-to-local.ts'
+export * from './push-to-hub.ts'
 
 export const name = 'federation-client'
 
@@ -37,7 +41,7 @@ export const Config: z<Config> = z.object({
   tools: z.array(z.string()).description('Supported tool names on this pod'),
   sandboxModes: z.array(z.string()).description('Supported sandbox execution modes'),
   role: z.union([z.const('read'), z.const('command'), z.const('manage'), z.const('takeover')]).default('command').description('Declared role for this pod'),
-  requestTimeoutMs: z.natural().default(10000).description('Bound (ms) on a session/send round-trip'),
+  requestTimeoutMs: z.natural().default(10000).description('Bound (ms) on session send, persist, and lease round-trips'),
 })
 
 /**
@@ -63,6 +67,18 @@ export function apply(ctx: Context, config: Config): void {
       description: 'send a message to a remote writer-node session inbox',
       input: { hint: '<sessionId> <message>' },
       handler: invocation => executeRemoteSend(ctx, invocation),
+    })
+    commands.register({
+      name: 'fork_to_local',
+      description: 'copy a hub session into local persistence (conversation continuity, not workspace files)',
+      input: { hint: '<sessionId> [cwd]' },
+      handler: invocation => executeForkToLocal(ctx, invocation),
+    })
+    commands.register({
+      name: 'push_to_hub',
+      description: 'upload a local session log to hub persistence',
+      input: { hint: '<sessionId>' },
+      handler: invocation => executePushToHub(ctx, invocation),
     })
   }
 }

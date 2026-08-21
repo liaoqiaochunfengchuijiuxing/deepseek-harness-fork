@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-`@deepseek-ai/dsh-session-source` 的远端联邦会话源提供者。通过 WebSocket 将边缘 pod 接入远端中心 federation hub，提供只读会话发现、检查、搜索与实时事件流订阅。
+`@deepseek-ai/dsh-session-source` 的远端联邦会话源提供者。通过 WebSocket 将边缘 pod 接入远端中心 federation hub，提供会话发现、检查、搜索、实时事件流订阅、fork-to-local 与 push-to-hub。
 
 ## Service Role
 
@@ -51,5 +51,7 @@
 
 ## Known Limitations and Deferred Work
 
-- **只读操作** — 远端会话修改操作（fork、delete、rename）递延至后续管理里程碑。
+- **Fork 只复制日志，不复制工作区** — `/fork_to_local` 把子会话写入本地持久化。工作区文件不会随会话同步；命令结果会说明会话连续性不是工作连续性。
+- **未知必读事件拒绝接手** — 格式版本不是 `SESSION_FORMAT_VERSION`，或含有未知且非 `ignorable` 事件类型的日志会被拒绝，而不是猜测。
+- **删除与重命名仍是本地操作** — 远端 delete/rename 不会被代理。
 - **降级回退** — 与 hub 断开连接时，会话列表与搜索将返回降级的缓存视图直至重连成功；实时订阅在收到 `federation/registered` 后从 `lastSeq + 1` 续订。

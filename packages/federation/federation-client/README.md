@@ -13,6 +13,8 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 5. **Cancellation & Abort:** Listens for `subagent/abort` messages to cancel in-flight tasks via `AbortController` and clean up running processes.
 6. **`/remote_send`:** When `ctx.commands` is mounted, registers a human command that delivers `<sessionId> <message>` to the writer-node inbox over `session/send`. Disconnected, unauthorized, writer-offline, and invalid sends return an error result and do not submit the text as a local model prompt.
 7. **Approval and question answerers:** Handles hub-forwarded `approval/request` and `question/request`. A programmatic `approvalAnswerer` / `questionAnswerer`, or a `federation/approval-request` / `federation/question-request` waterfall listener, answers on this pod. No answerer fails closed (`unavailable` / error result). `approval/cancel` and `question/cancel` abort the local wait. A duplicate in-flight `requestId` is coalesced and does not prompt twice.
+8. **Session persist and lease RPCs:** `ctx.federationClient.persistSession` uploads a locally-spooled event batch; `leaseSession` acquires or releases the hub writer lease. Persist payloads carry session id, header, and events only — credentials never go on this wire.
+9. **`/fork_to_local` and `/push_to_hub`:** When `ctx.commands` is mounted, copies a hub session into local persistence or uploads a local log to the hub. The fork result states that session continuity is not work continuity.
 
 ## Configuration
 
@@ -30,7 +32,7 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 | `tools` | optional | List of supported tool names. |
 | `sandboxModes` | optional | List of supported sandbox execution modes. |
 | `role` | `command` | Declared capability role (`read`, `command`, `manage`, or `takeover`). |
-| `requestTimeoutMs` | `10000` | Bound (ms) on a `session/send` round-trip. |
+| `requestTimeoutMs` | `10000` | Bound (ms) on session send, persist, and lease round-trips. |
 
 ```yaml
 - id: federation-client

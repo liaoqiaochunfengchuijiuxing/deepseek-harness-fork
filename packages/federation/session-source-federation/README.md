@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Remote Federation SessionSource provider for `@deepseek-ai/dsh-session-source`. Connects an edge pod to a remote federation hub over WebSocket, providing read-only session discovery, inspection, search, and live event stream subscriptions.
+Remote Federation SessionSource provider for `@deepseek-ai/dsh-session-source`. Connects an edge pod to a remote federation hub over WebSocket, providing session discovery, inspection, search, live event stream subscriptions, fork-to-local, and push-to-hub.
 
 ## Service Role
 
@@ -51,5 +51,7 @@ None. Remote session source operations do not alter model request prefixes or pr
 
 ## Known Limitations and Deferred Work
 
-- **Read-only operations** — remote session mutation (fork, delete, rename) is deferred to later management milestones.
+- **Fork copies the log, not the workspace** — `/fork_to_local` writes a child session into local persistence. Workspace files are not carried; the command result states that session continuity is not work continuity.
+- **Unknown required events refuse takeover** — a log whose format version is not `SESSION_FORMAT_VERSION`, or that contains an unknown non-`ignorable` event type, is rejected rather than guessed.
+- **Delete and rename stay local** — remote delete/rename are not proxied.
 - **Degraded fallback** — when disconnected from the hub, session listings and searches return degraded cached views until reconnection; live subscriptions resume from `lastSeq + 1` after `federation/registered`.
