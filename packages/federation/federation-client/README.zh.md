@@ -1,0 +1,63 @@
+# @deepseek-ai/dsh-federation-client
+
+[English](README.md) | 中文
+
+面向多节点 DeepSeek Harness 联邦的数据面客户端插件。将边缘 pod（本地工作站、开发者电脑、私有算力节点）向外单向连接至中心 federation hub，声明本地能力，维持心跳保活，并通过 pod 本地的 agent 引擎执行委派的 subagent 任务。
+
+## 架构与职责
+
+1. **外拨连接与重连循环：** 通过携带 Bearer 鉴权的 WebSocket 主动连接至 hub 的 `/federation/connect` 端点。在网络抖动或断线时采用指数退避机制自动重连。
+2. **能力声明：** 建立连接后，发送 `federation/register` 握手报文，声明 pod 的 `podId`、`name`、允许的工作区目录 `workspaces`、可用工具 `tools` 以及沙箱模式 `sandboxModes`。
+3. **心跳保活：** 按照配置的时间间隔（`heartbeatIntervalMs`）周期性发送 `federation/heartbeat` 心跳消息，维持 hub 注册表中的在线状态。
+4. **委派任务执行：** 接收来自 hub 的 `subagent/start` 消息，校验工作区权限约束，使用 pod 本地的模型路由与凭据启动任务，通过 `subagent/chunk` 实时回传流式文本分块，并在完成后返回 `subagent/stop` 终态结果。
+5. **任务中断与取消：** 监听 `subagent/abort` 消息，通过 `AbortController` 中断在途任务执行并清理资源。
+
+## 配置项
+
+| 配置项 | 默认值 | 含义 |
+|---|---|---|
+| `endpoint` | 必填 | 联邦 hub 的 WebSocket 端点 URL（例如 `ws://hub.internal:3080/federation/connect` 或 `wss://...`）。 |
+| `podId` | 必填 | 该 pod 在联邦集群中的唯一标识（例如 `pod-mac-1`）。 |
+| `name` | 必填 | 该 pod 的可读显示名称（例如 `MacBook Pro`）。 |
+| `token` | 可选 | 字面量 Bearer 鉴权 token；优先建议使用 `tokenEnv`。 |
+| `tokenEnv` | 可选 | 提供鉴权 token 的凭据引用（环境变量名称）。 |
+| `heartbeatIntervalMs` | `5000` | 心跳发送间隔（毫秒）。 |
+| `reconnectDelayMs` | `2000` | 初始重连退避延迟（毫秒）。 |
+| `maxReconnectDelayMs` | `30000` | 最大重连延迟上限（毫秒）。 |
+| `workspaces` | 可选 | 允许执行的工作区根目录列表。未指定时为环境默认目录。 |
+| `tools` | 可选 | 支持的工具名称列表。 |
+| `sandboxModes` | 可选 | 支持的沙箱执行模式列表。 |
+| `role` | `command` | 声明的能力角色（`read`、`command`、`manage` 或 `takeover`）。 |
+
+```yaml
+- id: federation-client
+  name: '@deepseek-ai/dsh-federation-client'
+  config:
+    endpoint: ws://127.0.0.1:3080/federation/connect
+    podId: pod-developer-workstation
+    name: Dev Workstation
+    tokenEnv: DSH_POD_TOKEN
+    workspaces:
+      - /Users/developer/projects
+```
+
+## 模型体验
+
+### 在 Pod 上执行委派 Subagent
+
+#### 模型所见
+
+Pod 上的 agent 将收到的 subagent `prompt`（通过 `subagent/start` 报文接收）作为全新会话 turn 执行，使用 pod 本地的系统提示词、已安装工具（例如 `tool_bash`、`tool_fs`）及本地文件系统上下文。它不会收到委派方的上级历史对话。
+
+#### Token 影响
+
+Pod 消耗自身的上下文窗口和 token 额度，使用本地凭据和模型路由。Token 消耗情况可在终态 `subagent/stop` 结果中回传。
+
+#### KV Cache 影响
+
+对发起委派的父节点中立。在 pod 本地，执行遵循全新 subagent 会话的标准追加式 KV cache 生命周期。
+
+## 已知限制与延后工作
+
+- 跨联邦客户端的交互式多 turn 延续会话延后至 M2/M3 里程碑。
+- 持久化会话缓存与断点上传至 hub 规划在 M4 里程碑。

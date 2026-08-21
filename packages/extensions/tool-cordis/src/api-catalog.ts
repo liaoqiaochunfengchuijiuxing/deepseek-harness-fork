@@ -642,6 +642,31 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'federationClient',
+    summary: 'Service exposing the edge pod\'s federation connection and task status.',
+    description: 'Service exposing the edge pod\'s federation connection and task status.',
+    methods: [
+      {
+        signature: 'getStatus(): PodConnectionStatus',
+        description: 'Get the current connection lifecycle status.',
+        parameters: [],
+        returns: 'Current PodConnectionStatus (\'connected\' | \'connecting\' | \'disconnected\').',
+      },
+      {
+        signature: 'getPodId(): string',
+        description: 'Get the pod ID configured on this edge client.',
+        parameters: [],
+        returns: 'Configured pod ID string.',
+      },
+      {
+        signature: 'getActiveTaskCount(): number',
+        description: 'Get the count of currently in-flight delegated subagent tasks.',
+        parameters: [],
+        returns: 'Number of running tasks.',
+      },
+    ],
+  },
+  {
     key: 'federationHub',
     summary: 'Service managing connected pods and message routing across the federation hub.',
     description: 'Service managing connected pods and message routing across the federation hub.',
@@ -3714,6 +3739,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PodCapabilities',
     declaration: 'export interface PodCapabilities {\n    workspaces?: string[];\n    sandboxModes?: string[];\n    supportedTools?: string[];\n    tags?: Record<string, string>;\n}',
+  },
+  {
+    name: 'PodConnectionStatus',
+    declaration: 'export type PodConnectionStatus = \'disconnected\' | \'connecting\' | \'connected\';',
   },
   {
     name: 'PodInfo',

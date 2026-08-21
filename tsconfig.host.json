@@ -274,6 +274,7 @@
     { "path": "./packages/subagent/subagent-dsh-sdk" },
     { "path": "./packages/subagent/subagent-remote" },
     { "path": "./packages/federation/federation-hub" },
+    { "path": "./packages/federation/federation-client" },
     { "path": "./packages/jobs/jobs" },
     { "path": "./packages/jobs/jobs-local" },
     { "path": "./packages/jobs/tool-jobs" },

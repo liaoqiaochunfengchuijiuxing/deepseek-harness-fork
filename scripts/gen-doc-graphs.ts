@@ -479,6 +479,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Providers implement transports; the service also owns optional Activation-based continuation orchestration, tool-subagent selects one-shot or continuable delegation, tool-subagent-control delivers follow-ups, and tool-ralph requires one fresh structured-output route.',
   },
   {
+    key: 'federationClient',
+    pkg: 'federation-client',
+    title: 'Federation pod client connection service',
+    mode: 'seam',
+    implementations: ['federation-client'],
+    consumers: [],
+    note: 'Manages outbound connection from edge pod to federation hub, capability advertisement, and execution of delegated subagent runs.',
+  },
+  {
     key: 'federationHub',
     pkg: 'federation-hub',
     title: 'Federation hub registry and routing service',

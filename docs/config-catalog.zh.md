@@ -631,6 +631,96 @@ export interface Config {
 
 来源：[`packages/experimental/tool-agent-team/src/index.ts:17`](../packages/experimental/tool-agent-team/src/index.ts)
 
+<a id="deepseek-aidsh-federation-client"></a>
+
+## `@deepseek-ai/dsh-federation-client`
+
+```ts config-catalog
+/** Config alias for the federation client plugin. */
+export type Config = FederationClientConfig
+
+/** Configuration options for the federation pod client. */
+export interface FederationClientConfig {
+  /** WebSocket endpoint of the federation hub (e.g. `ws://hub.internal:3080/federation/connect`). */
+  endpoint: string
+  /** Unique identifier for this pod in the cluster. */
+  podId: string
+  /** Human-readable display name. */
+  name: string
+  /** Authentication Bearer token for connecting to the hub. */
+  token?: string
+  /** Environment variable name containing the authentication token. */
+  tokenEnv?: string
+  /** Heartbeat interval in milliseconds (default: 5000). */
+  heartbeatIntervalMs?: number
+  /** Initial reconnect delay in milliseconds (default: 2000). */
+  reconnectDelayMs?: number
+  /** Maximum reconnect delay in milliseconds (default: 30000). */
+  maxReconnectDelayMs?: number
+  /** Permitted workspace directories. Empty means ambient / unrestricted. */
+  workspaces?: string[]
+  /** Supported tool names. */
+  tools?: string[]
+  /** Supported sandbox modes. */
+  sandboxModes?: string[]
+  /** Declared role for this pod. */
+  role?: 'read' | 'command' | 'manage' | 'takeover'
+  /** Optional custom delegated task executor. */
+  executor?: DelegatedTaskExecutor
+}
+
+/** Custom execution handler signature for executing delegated tasks. */
+export type DelegatedTaskExecutor = (
+  req: RemoteSubagentStartPayload,
+  onChunk: (delta: string) => void,
+  signal: AbortSignal,
+) => Promise<RemoteSubagentStopPayload>
+
+/** Task delegation start message received from hub. */
+export interface RemoteSubagentStartPayload {
+  /** Discriminant message type tag. */
+  type: 'subagent/start'
+  /** Delegation run identifier. */
+  id: string
+  /** Prompt content blocks for the task. */
+  prompt: ContentBlock[]
+  /** Optional human-readable task label. */
+  label?: string | undefined
+  /** Optional working directory override. */
+  cwd?: string | undefined
+}
+
+/** Task terminal stop payload sent back to hub. */
+export interface RemoteSubagentStopPayload {
+  /** Discriminant message type tag. */
+  type: 'subagent/stop'
+  /** Delegation run identifier. */
+  id: string
+  /** Final assistant output blocks. */
+  output: ContentBlock[]
+  /** Terminal stop reason. */
+  stopReason: SubagentStopReason
+  /** Diagnostic failure reason if failed. */
+  diagnostic?: string | undefined
+  /** Optional token usage measurements. */
+  usage?: TokenUsageSummary | undefined
+}
+
+/** Token usage summary returned in delegation result. */
+export interface TokenUsageSummary {
+  /** Number of prompt tokens processed. */
+  promptTokens: number
+  /** Number of completion tokens generated. */
+  completionTokens: number
+  /** Total tokens consumed. */
+  totalTokens: number
+}
+```
+
+依赖项：[`ContentBlock`](subsystems/llm-streaming.md) · [`SubagentStopReason`](../packages/subagent/subagent/src/index.ts)
+
+来源：[`packages/federation/federation-client/src/index.ts:22`](../packages/federation/federation-client/src/index.ts)
+
 <a id="deepseek-aidsh-federation-hub"></a>
 
 ## `@deepseek-ai/dsh-federation-hub`

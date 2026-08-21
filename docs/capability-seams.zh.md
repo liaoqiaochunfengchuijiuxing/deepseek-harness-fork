@@ -163,6 +163,8 @@ flowchart LR
   pkg_subagent_remote["subagent-remote"]
   pkg_tool_subagent_control["tool-subagent-control"]
   pkg_tool_ralph["tool-ralph"]
+  pkg_federation_client["federation-client"]
+  svc_federationClient["ctx.federationClient<br/>Federation pod client connection service"]
   pkg_federation_hub["federation-hub"]
   svc_federationHub["ctx.federationHub<br/>Federation hub registry and routing service"]
   pkg_agent_team["agent-team"]
@@ -231,6 +233,7 @@ flowchart LR
   pkg_directory_picker_browse --> svc_directoryPicker
   pkg_directory_picker_native --> svc_directoryPicker
   pkg_e2b --> svc_e2b
+  pkg_federation_client --> svc_federationClient
   pkg_federation_hub --> svc_federationHub
   pkg_file_reference --> svc_fileReferences
   pkg_file_reference_local --> svc_fileReferences
@@ -475,6 +478,7 @@ flowchart LR
 | `ctx.fs` | `seam` | [`fs`](../packages/fs/fs) | [`fs-local`](../packages/fs/fs-local), [`fs-sandbox`](../packages/fs/fs-sandbox), [`fs-e2b`](../packages/e2b/fs-e2b) | [`tool-fs`](../packages/fs/tool-fs) | [`fs-observation-policy`](../packages/fs/fs-observation-policy) | tool-fs 通过 ctx.fs 执行读取／写入／编辑；fs-sandbox 按共享沙箱模式限制变更；fs-observation-policy 通过 fs/* 事件门禁贡献基于观测状态的检查。 |
 | `ctx.compaction` | `seam` | [`compaction`](../packages/compaction/compaction) | [`compaction-basic`](../packages/compaction/compaction-basic) | [`compaction-basic`](../packages/compaction/compaction-basic) | - | 基础后端消费步骤后的压力事件和请求错误恢复事件；不存在面向模型的压缩工具。 |
 | `ctx.subagents` | `seam` | [`subagent`](../packages/subagent/subagent) | [`subagent-spawn-in-process`](../packages/subagent/subagent-spawn-in-process), [`subagent-fork-in-process`](../packages/subagent/subagent-fork-in-process), [`subagent-acp`](../packages/subagent/subagent-acp), [`subagent-codex`](../packages/subagent/subagent-codex), [`subagent-claude-code`](../packages/subagent/subagent-claude-code), [`subagent-dsh-sdk`](../packages/subagent/subagent-dsh-sdk), [`subagent-remote`](../packages/subagent/subagent-remote) | [`tool-subagent`](../packages/subagent/tool-subagent), [`tool-subagent-control`](../packages/subagent/tool-subagent-control), [`tool-ralph`](../packages/workflow/tool-ralph) | - | 提供方实现传输；该服务还负责可选的、基于 Activation 的延续编排，tool-subagent 选择一次性或可延续委派，tool-subagent-control 传递后续消息，而 tool-ralph 要求一条全新的结构化输出路由。 |
+| `ctx.federationClient` | `seam` | [`federation-client`](../packages/federation/federation-client) | [`federation-client`](../packages/federation/federation-client) | - | - | 管理边缘 pod 到中心 hub 的外拨连接、能力声明以及委派 subagent 任务的执行。 |
 | `ctx.federationHub` | `seam` | [`federation-hub`](../packages/federation/federation-hub) | [`federation-hub`](../packages/federation/federation-hub) | [`subagent-remote`](../packages/subagent/subagent-remote) | - | 管理 pod 注册表、WebSocket 端点以及 hub 与已连接 edge pod 之间的委派路由。 |
 | `ctx.agentTeams` | `core` | `agent-team` | - | `tool-agent-team` | - | 负责隐式 Root roster、持久 peer mailbox、共享任务 DAG 与 continuable child 生命周期；tool-agent-team 提供作用域化模型策略和控制工具。 |
 | `ctx.jobs` | `seam` | [`jobs`](../packages/jobs/jobs) | [`jobs-local`](../packages/jobs/jobs-local) | [`tool-bash`](../packages/shell/tool-bash), [`tool-terminal`](../packages/terminal/tool-terminal), [`tool-subagent`](../packages/subagent/tool-subagent), [`tool-jobs`](../packages/jobs/tool-jobs) | - | 生产方（后台 bash、PTY 发送和 subagent 委派）登记正在运行的工作；tool-jobs 是面向模型的控制器，用于读取、列出和终止这些工作；jobs-local 是进程本地注册表。 |
