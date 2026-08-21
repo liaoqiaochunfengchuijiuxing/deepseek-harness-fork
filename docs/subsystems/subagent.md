@@ -584,7 +584,7 @@ cancelPodDelegation(podId: string, runId: string, reason?: string): void
 handlePodMessage(podId: string, message: FederationWireMessage): void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:64`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:66`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 

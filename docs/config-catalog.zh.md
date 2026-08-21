@@ -725,6 +725,8 @@ export interface TokenUsageSummary {
 
 ## `@deepseek-ai/dsh-federation-hub`
 
+需要：`sessionSources`
+
 ```ts config-catalog
 /** Config schema for federation hub. */
 export interface Config extends FederationHubConfig {}
@@ -761,7 +763,7 @@ export interface TokenConfig {
 export type FederationTokenRole = 'read' | 'command' | 'manage' | 'takeover'
 ```
 
-来源：[`packages/federation/federation-hub/src/index.ts:21`](../packages/federation/federation-hub/src/index.ts)
+来源：[`packages/federation/federation-hub/src/index.ts:22`](../packages/federation/federation-hub/src/index.ts)
 
 <a id="deepseek-aidsh-file-reference-local"></a>
 
@@ -1960,6 +1962,41 @@ export interface Config {
 ```
 
 来源：[`packages/context/session-reference/src/config.ts:11`](../packages/context/session-reference/src/config.ts)
+
+<a id="deepseek-aidsh-session-source-federation"></a>
+
+## `@deepseek-ai/dsh-session-source-federation`
+
+需要：`sessionSources`
+
+```ts config-catalog
+/** Configuration schema for federation session source provider. */
+export interface Config extends FederationSessionSourceConfig {}
+
+/** Configuration options for the remote federation session source. */
+export interface FederationSessionSourceConfig {
+  /** WebSocket endpoint URL of the remote federation hub (e.g. ws://hub.internal:3080/federation/connect). */
+  endpoint: string
+  /** Literal authentication token. */
+  token?: string
+  /** Environment variable name holding the authentication token. */
+  tokenEnv?: string
+  /** Unique session source identifier (default 'federation-hub'). */
+  sourceId?: string
+  /** Human-readable display name for this session source (default 'Hub Sessions'). */
+  sourceName?: string
+  /** Connection timeout in milliseconds (default 5000). */
+  connectTimeoutMs?: number
+  /** Request timeout in milliseconds (default 10000). */
+  requestTimeoutMs?: number
+  /** Whether to automatically reconnect on disconnect (default true). */
+  autoReconnect?: boolean
+  /** Delay before attempting reconnect in milliseconds (default 2000). */
+  reconnectDelayMs?: number
+}
+```
+
+来源：[`packages/federation/session-source-federation/src/index.ts:22`](../packages/federation/session-source-federation/src/index.ts)
 
 <a id="deepseek-aidsh-session-telemetry-otel"></a>
 

@@ -176,7 +176,7 @@ const SERVICE_ROLES: ServiceRole[] = [
     pkg: 'session-source',
     title: 'Multi-source session aggregation seam',
     mode: 'seam',
-    implementations: ['session-source-local'],
+    implementations: ['session-source-local', 'session-source-federation'],
     consumers: ['host-apiproxy', 'federation-hub', 'federation-client'],
     note: 'Exposes a unified listing, inspection, search, and event subscription surface across local persistence and remote federation nodes.',
   },

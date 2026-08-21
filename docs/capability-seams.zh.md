@@ -49,6 +49,7 @@ flowchart LR
   pkg_session_source["session-source"]
   svc_sessionSources["ctx.sessionSources<br/>Multi-source session aggregation seam"]
   pkg_session_source_local["session-source-local"]
+  pkg_session_source_federation["session-source-federation"]
   pkg_host_apiproxy["host-apiproxy"]
   pkg_federation_hub["federation-hub"]
   pkg_federation_client["federation-client"]
@@ -272,6 +273,7 @@ flowchart LR
   pkg_session_query_sqlite --> svc_sessionQuery
   pkg_session_reference --> svc_sessionReferenceResolver
   pkg_session_source --> svc_sessionSources
+  pkg_session_source_federation --> svc_sessionSources
   pkg_session_source_local --> svc_sessionSources
   pkg_session_telemetry --> svc_sessionTelemetry
   pkg_session_telemetry_otel --> svc_sessionTelemetry
@@ -449,7 +451,7 @@ flowchart LR
 | `ctx.typert` | `core` | [`typert-registry`](../packages/typert/registry) | - | [`typert-loader`](../packages/typert/loader), [`api-gateway`](../packages/api/gateway) | - | 插件直接或通过 dsh-typert-loader 注册实时 zod 贡献；API 网关消费调用描述符和提供方，其他运行时消费方则在各自边界查询 schema 与反射元数据。 |
 | `ctx.typertGateway` | `core` | [`api-gateway`](../packages/api/gateway) | - | - | - | 将生成的 Remote 描述符与实时 Cordis 服务关联，解析已注册的身份，并通过共享的 Connection RPC 载体提供一元调用。 |
 | `ctx.sessionPersistence` | `seam` | [`session-persistence`](../packages/session/session-persistence) | [`session-persistence-jsonl`](../packages/session/session-persistence-jsonl), [`session-persistence-sqlite`](../packages/session/session-persistence-sqlite) | [`agent-loop`](../packages/core/agent-loop), [`tool-bash`](../packages/shell/tool-bash), [`hooks-claude-code`](../packages/hooks/hooks-claude-code), [`hooks-codex`](../packages/hooks/hooks-codex), [`session-query`](../packages/session-query/session-query), [`session-query-sqlite`](../packages/session-query/session-query-sqlite), [`message-feedback`](../packages/feedback/message-feedback) | - | 各后端持久化同一套 SessionEvent 词汇；应用在组合时选择后端。 |
-| `ctx.sessionSources` | `seam` | [`session-source`](../packages/session/session-source) | [`session-source-local`](../packages/session/session-source-local) | [`host-apiproxy`](../packages/host/apiproxy), [`federation-hub`](../packages/federation/federation-hub), [`federation-client`](../packages/federation/federation-client) | - | 暴露跨本地持久化与远端联邦节点的统一列表、检查、搜索与事件订阅表面。 |
+| `ctx.sessionSources` | `seam` | [`session-source`](../packages/session/session-source) | [`session-source-local`](../packages/session/session-source-local), [`session-source-federation`](../packages/federation/session-source-federation) | [`host-apiproxy`](../packages/host/apiproxy), [`federation-hub`](../packages/federation/federation-hub), [`federation-client`](../packages/federation/federation-client) | - | 暴露跨本地持久化与远端联邦节点的统一列表、检查、搜索与事件订阅表面。 |
 | `ctx.settings` | `seam` | [`settings`](../packages/settings/settings) | [`settings-file`](../packages/settings/settings-file) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 插件注册命名空间 schema 并解析分层值；提供方存储原始文档。LLM（大语言模型）适配器在用户分区下将其入口配置注册为组合基础；Web 网关提供经过脱敏的分层描述符，并写入用户层。 |
 | `ctx.credentials` | `seam` | [`credentials`](../packages/credentials/credentials) | [`credentials-local`](../packages/credentials/credentials-local) | [`llm-deepseek`](../packages/llm/llm-deepseek), [`llm-pi-ai`](../packages/llm/llm-pi-ai), `apiproxy` | - | 配置携带对机密信息的引用；提供方拥有实际值。消费方按操作解析，因此轮换后的凭据会在紧接着的下一次请求中生效；Web 网关提供不含实际值的视图和只写存储。 |
 | `ctx.sessionTelemetry` | `seam` | [`session-telemetry`](../packages/session/session-telemetry) | [`session-telemetry-otel`](../packages/session/session-telemetry-otel) | - | - | 该 seam 捕获会话记录、进行脱敏并交给一个后端；没有其他组件消费该服务，其输出会离开当前进程。 |

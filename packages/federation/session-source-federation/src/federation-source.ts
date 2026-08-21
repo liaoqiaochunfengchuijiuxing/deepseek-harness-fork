@@ -1,0 +1,416 @@
+/**
+ * Remote Federation Session Source implementation.
+ * Proxies session operations to a remote federation hub over WebSocket.
+ *
+ * @module @deepseek-ai/dsh-session-source-federation/federation-source
+ */
+
+import { randomUUID } from 'node:crypto'
+import { WebSocket } from 'ws'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type {
+  SessionInspectionResult,
+  SessionSearchFilter,
+  SessionSource,
+  SessionSourceCapabilities,
+  SessionSummary,
+} from '@deepseek-ai/dsh-session-source'
+import type { FederationSessionSourceConfig } from './types.ts'
+
+interface PendingRequest {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
+interface ActiveSubscription {
+  subscriptionId: string
+  sessionId: SessionId
+  callback: (event: SessionEvent) => void
+  lastSeq: number | undefined
+}
+
+function rawDataToString(data: WebSocket.RawData): string {
+  if (typeof data === 'string') return data
+  if (Buffer.isBuffer(data)) return data.toString('utf8')
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
+  return Buffer.from(data).toString('utf8')
+}
+
+/**
+ * SessionSource provider that delegates session queries and subscriptions
+ * over a persistent WebSocket connection to a central federation hub.
+ */
+export class FederationSessionSource implements SessionSource {
+  readonly id: string
+  readonly name: string
+  readonly kind = 'remote' as const
+  readonly capabilities: SessionSourceCapabilities = {
+    canWrite: false,
+    canFork: false,
+    canDelete: false,
+    canRename: false,
+    canSearch: true,
+  }
+
+  private ws: WebSocket | undefined
+  private isOnline = false
+  private isDisposed = false
+  private reconnectTimer: NodeJS.Timeout | undefined
+  private readonly pendingRequests = new Map<string, PendingRequest>()
+  private readonly activeSubscriptions = new Map<string, ActiveSubscription>()
+  private cachedSummaries: SessionSummary[] = []
+
+  constructor(private readonly config: FederationSessionSourceConfig) {
+    this.id = config.sourceId ?? 'federation-hub'
+    this.name = config.sourceName ?? 'Hub Sessions'
+  }
+
+  /**
+   * Check whether the remote hub connection is currently active.
+   * @returns true if connected and online.
+   */
+  get online(): boolean {
+    return this.isOnline
+  }
+
+  /**
+   * Start the outbound connection to the federation hub.
+   */
+  start(): void {
+    if (this.isDisposed) return
+    this.connect()
+  }
+
+  /**
+   * Terminate connection and clean up resources.
+   */
+  dispose(): void {
+    this.isDisposed = true
+    if (this.reconnectTimer !== undefined) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
+    }
+
+    for (const [id, req] of this.pendingRequests) {
+      clearTimeout(req.timer)
+      req.reject(new Error(`Session source "${this.id}" disposed`))
+      this.pendingRequests.delete(id)
+    }
+
+    this.activeSubscriptions.clear()
+
+    if (this.ws) {
+      try {
+        this.ws.close()
+      } catch {
+        // ignore close error
+      }
+      this.ws = undefined
+    }
+    this.isOnline = false
+  }
+
+  private resolveToken(): string | undefined {
+    if (this.config.token) return this.config.token
+    if (this.config.tokenEnv && process.env[this.config.tokenEnv]) {
+      return process.env[this.config.tokenEnv]
+    }
+    return undefined
+  }
+
+  private connect(): void {
+    if (this.isDisposed) return
+
+    let endpointUrl = this.config.endpoint
+    const token = this.resolveToken()
+    if (token) {
+      const url = new URL(endpointUrl)
+      url.searchParams.set('token', token)
+      endpointUrl = url.toString()
+    }
+
+    try {
+      const ws = new WebSocket(endpointUrl)
+      this.ws = ws
+
+      ws.on('open', () => {
+        if (this.ws !== ws) return
+        this.isOnline = true
+
+        // Re-subscribe all active subscriptions with seq resumption
+        for (const sub of this.activeSubscriptions.values()) {
+          const fromSeq = sub.lastSeq !== undefined ? sub.lastSeq + 1 : undefined
+          this.sendWireMessage({
+            type: 'session/subscribe',
+            subscriptionId: sub.subscriptionId,
+            sessionId: sub.sessionId,
+            ...fromSeq !== undefined ? { fromSeq } : {},
+          })
+        }
+      })
+
+      ws.on('message', (data: WebSocket.RawData) => {
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(rawDataToString(data))
+        } catch {
+          return
+        }
+
+        if (typeof parsed !== 'object' || parsed === null || !('type' in parsed)) return
+        this.handleMessage(parsed as { type: string; [key: string]: unknown })
+      })
+
+      ws.on('close', () => {
+        if (this.ws !== ws) return
+        this.isOnline = false
+        this.ws = undefined
+        this.scheduleReconnect()
+      })
+
+      ws.on('error', () => {
+        if (this.ws !== ws) return
+        this.isOnline = false
+        try {
+          ws.terminate()
+        } catch {
+          // ignore terminate error
+        }
+      })
+    } catch {
+      this.isOnline = false
+      this.scheduleReconnect()
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.isDisposed || this.config.autoReconnect === false) return
+    if (this.reconnectTimer !== undefined) return
+
+    const delay = this.config.reconnectDelayMs ?? 2000
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined
+      this.connect()
+    }, delay)
+  }
+
+  private sendWireMessage(msg: Record<string, unknown>): boolean {
+    if (!this.ws || this.ws.readyState !== 1 /* WebSocket.OPEN */) {
+      return false
+    }
+    try {
+      this.ws.send(JSON.stringify(msg))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private handleMessage(msg: { type: string; [key: string]: unknown }): void {
+    switch (msg.type) {
+      case 'session/list-result': {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const req = this.pendingRequests.get(requestId)
+        if (req) {
+          clearTimeout(req.timer)
+          this.pendingRequests.delete(requestId)
+          const sessions = Array.isArray(msg.sessions) ? msg.sessions as SessionSummary[] : []
+          this.cachedSummaries = sessions.map(s => ({ ...s, sourceId: this.id }))
+          req.resolve(this.cachedSummaries)
+        }
+        break
+      }
+      case 'session/get-result': {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const req = this.pendingRequests.get(requestId)
+        if (req) {
+          clearTimeout(req.timer)
+          this.pendingRequests.delete(requestId)
+          req.resolve(msg.session)
+        }
+        break
+      }
+      case 'session/search-result': {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const req = this.pendingRequests.get(requestId)
+        if (req) {
+          clearTimeout(req.timer)
+          this.pendingRequests.delete(requestId)
+          const sessions = Array.isArray(msg.sessions) ? msg.sessions as SessionSummary[] : []
+          req.resolve(sessions.map(s => ({ ...s, sourceId: this.id })))
+        }
+        break
+      }
+      case 'session/stream-event': {
+        const subscriptionId = typeof msg.subscriptionId === 'string' ? msg.subscriptionId : ''
+        const sub = this.activeSubscriptions.get(subscriptionId)
+        if (sub && msg.event && typeof msg.event === 'object') {
+          const event = msg.event as SessionEvent
+          sub.lastSeq = event.seq
+          sub.callback(event)
+        }
+        break
+      }
+      default:
+        break
+    }
+  }
+
+  private requestWithTimeout<T>(type: string, payload: Record<string, unknown>): Promise<T> {
+    const requestId = randomUUID()
+    const timeoutMs = this.config.requestTimeoutMs ?? 10000
+
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId)
+        reject(new Error(`Federation session source request "${type}" timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      this.pendingRequests.set(requestId, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timer,
+      })
+
+      const sent = this.sendWireMessage({
+        type,
+        requestId,
+        ...payload,
+      })
+
+      if (!sent) {
+        clearTimeout(timer)
+        this.pendingRequests.delete(requestId)
+        reject(new Error('Federation session source is not connected'))
+      }
+    })
+  }
+
+  /**
+   * List sessions from the remote hub.
+   * If offline, returns cached summaries marked as degraded.
+   *
+   * @param options - optional directory and limit filters.
+   * @returns array of session summaries.
+   */
+  async listSessions(options?: SessionSearchFilter): Promise<SessionSummary[]> {
+    if (!this.isOnline || !this.ws || this.ws.readyState !== 1) {
+      // Degraded fallback
+      let results = this.cachedSummaries.map(s => ({ ...s, isDegraded: true }))
+      if (options?.cwd !== undefined) {
+        results = results.filter(s => s.cwd === options.cwd)
+      }
+      if (options?.limit !== undefined && options.limit > 0) {
+        results = results.slice(0, options.limit)
+      }
+      return results
+    }
+
+    try {
+      const sessions = await this.requestWithTimeout<SessionSummary[]>('session/list', {
+        ...options?.cwd !== undefined ? { cwd: options.cwd } : {},
+        ...options?.limit !== undefined ? { limit: options.limit } : {},
+      })
+      return sessions
+    } catch {
+      // Return degraded cache on request error
+      return this.cachedSummaries.map(s => ({ ...s, isDegraded: true }))
+    }
+  }
+
+  /**
+   * Inspect a session on the remote hub.
+   * @param sessionId - target session identifier.
+   * @returns Session inspection result or undefined if absent/offline.
+   */
+  async getSession(sessionId: SessionId): Promise<SessionInspectionResult | undefined> {
+    if (!this.isOnline || !this.ws || this.ws.readyState !== 1) {
+      return undefined
+    }
+
+    try {
+      return await this.requestWithTimeout<SessionInspectionResult | undefined>('session/get', {
+        sessionId,
+      })
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Search sessions on the remote hub.
+   * @param options - search filter query.
+   * @returns matching session summaries.
+   */
+  async searchSessions(options: SessionSearchFilter): Promise<SessionSummary[]> {
+    if (!this.isOnline || !this.ws || this.ws.readyState !== 1) {
+      let results = this.cachedSummaries.map(s => ({ ...s, isDegraded: true }))
+      if (options.query) {
+        const q = options.query.toLowerCase()
+        results = results.filter(s =>
+          (s.title?.toLowerCase().includes(q) ?? false) || s.id.toLowerCase().includes(q),
+        )
+      }
+      if (options.cwd !== undefined) {
+        results = results.filter(s => s.cwd === options.cwd)
+      }
+      if (options.limit !== undefined && options.limit > 0) {
+        results = results.slice(0, options.limit)
+      }
+      return results
+    }
+
+    try {
+      return await this.requestWithTimeout<SessionSummary[]>('session/search', {
+        ...options.query !== undefined ? { query: options.query } : {},
+        ...options.cwd !== undefined ? { cwd: options.cwd } : {},
+        ...options.limit !== undefined ? { limit: options.limit } : {},
+      })
+    } catch {
+      return this.cachedSummaries.map(s => ({ ...s, isDegraded: true }))
+    }
+  }
+
+  /**
+   * Subscribe to live session stream events from the remote hub.
+   * @param sessionId - target session identifier.
+   * @param onEvent - callback for committed events.
+   * @param fromSeq - optional start sequence number.
+   * @returns disposer to cancel subscription.
+   */
+  subscribeEvents(
+    sessionId: SessionId,
+    onEvent: (event: SessionEvent) => void,
+    fromSeq?: number,
+  ): Promise<() => void> {
+    const subscriptionId = `sub-${randomUUID()}`
+    this.activeSubscriptions.set(subscriptionId, {
+      subscriptionId,
+      sessionId,
+      callback: onEvent,
+      lastSeq: fromSeq !== undefined ? fromSeq - 1 : undefined,
+    })
+
+    if (this.isOnline && this.ws && this.ws.readyState === 1) {
+      this.sendWireMessage({
+        type: 'session/subscribe',
+        subscriptionId,
+        sessionId,
+        ...fromSeq !== undefined ? { fromSeq } : {},
+      })
+    }
+
+    const disposer = (): void => {
+      this.activeSubscriptions.delete(subscriptionId)
+      if (this.isOnline && this.ws && this.ws.readyState === 1) {
+        this.sendWireMessage({
+          type: 'session/unsubscribe',
+          subscriptionId,
+        })
+      }
+    }
+
+    return Promise.resolve(disposer)
+  }
+}
