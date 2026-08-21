@@ -240,7 +240,7 @@ export class FederationHubServer {
 
     socket.on('close', () => {
       if (podId !== undefined) {
-        this.service.setPodStatus(podId, 'offline')
+        this.service.markSocketClosed(podId, socket)
       }
     })
 

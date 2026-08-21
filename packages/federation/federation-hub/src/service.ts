@@ -213,6 +213,18 @@ export class FederationHubService extends Service {
   }
 
   /**
+   * Mark a pod offline only when `socket` is still the registered connection.
+   * A replaced connection's stale close must not offline the live successor.
+   * @param podId - pod whose socket closed.
+   * @param socket - the socket that closed.
+   */
+  markSocketClosed(podId: string, socket: WebSocket): void {
+    const record = this.pods.get(podId)
+    if (record === undefined || record.socket !== socket) return
+    this.setPodStatus(podId, 'offline')
+  }
+
+  /**
    * Update the heartbeat timestamp for a pod.
    * @param podId - pod identifier.
    */

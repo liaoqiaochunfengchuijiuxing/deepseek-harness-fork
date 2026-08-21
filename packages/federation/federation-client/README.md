@@ -12,7 +12,7 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 4. **Delegated Task Execution:** Receives `subagent/start` messages from the hub, checks workspace constraints, executes tasks locally using the pod's own credentials and model routing, streams deltas via `subagent/chunk`, and returns final results via `subagent/stop`.
 5. **Cancellation & Abort:** Listens for `subagent/abort` messages to cancel in-flight tasks via `AbortController` and clean up running processes.
 6. **`/remote_send`:** When `ctx.commands` is mounted, registers a human command that delivers `<sessionId> <message>` to the writer-node inbox over `session/send`. Disconnected, unauthorized, writer-offline, and invalid sends return an error result and do not submit the text as a local model prompt.
-7. **Approval and question answerers:** Handles hub-forwarded `approval/request` and `question/request`. A programmatic `approvalAnswerer` / `questionAnswerer`, or a `federation/approval-request` / `federation/question-request` waterfall listener, answers on this pod. No answerer fails closed (`unavailable` / error result). `approval/cancel` and `question/cancel` abort the local wait.
+7. **Approval and question answerers:** Handles hub-forwarded `approval/request` and `question/request`. A programmatic `approvalAnswerer` / `questionAnswerer`, or a `federation/approval-request` / `federation/question-request` waterfall listener, answers on this pod. No answerer fails closed (`unavailable` / error result). `approval/cancel` and `question/cancel` abort the local wait. A duplicate in-flight `requestId` is coalesced and does not prompt twice.
 
 ## Configuration
 

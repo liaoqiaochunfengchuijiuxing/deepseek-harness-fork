@@ -474,6 +474,7 @@ export class FederationPodClient {
   }
 
   private async handleApprovalRequest(msg: FederationApprovalRequestPayload): Promise<void> {
+    if (this.pendingApprovals.has(msg.requestId)) return
     const controller = new AbortController()
     this.pendingApprovals.set(msg.requestId, controller)
     let outcome: ApprovalOutcome = 'unavailable'
@@ -501,6 +502,7 @@ export class FederationPodClient {
   }
 
   private async handleQuestionRequest(msg: FederationQuestionRequestPayload): Promise<void> {
+    if (this.pendingQuestions.has(msg.requestId)) return
     const controller = new AbortController()
     this.pendingQuestions.set(msg.requestId, controller)
     try {

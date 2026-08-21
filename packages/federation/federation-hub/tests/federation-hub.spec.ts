@@ -84,6 +84,20 @@ describe('FederationHubService', () => {
     expect(found?.podId).toBe('pod-1')
   })
 
+  it('does not offline a pod when a replaced socket closes', () => {
+    const { socket: first } = createFakeSocket()
+    const { socket: second } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', first)
+    service.registerPod('pod-1', 'Pod 1', {}, 'command', second)
+    expect(service.getPod('pod-1')?.status).toBe('online')
+    service.markSocketClosed('pod-1', first)
+    expect(service.getPod('pod-1')?.status).toBe('online')
+    service.markSocketClosed('missing', first)
+    expect(service.getPod('pod-1')?.status).toBe('online')
+    service.markSocketClosed('pod-1', second)
+    expect(service.getPod('pod-1')?.status).toBe('offline')
+  })
+
   it('updates heartbeat timestamp and unregisters pod', () => {
     const { socket } = createFakeSocket()
     service.registerPod('pod-1', 'Pod 1', {}, 'read', socket)

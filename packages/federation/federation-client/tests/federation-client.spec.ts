@@ -375,6 +375,56 @@ describe('dsh-federation-client', () => {
       client.dispose()
     })
 
+    it('coalesces a duplicate in-flight approval/request and question/request', async () => {
+      let approvals = 0
+      let questions = 0
+      let releaseAp: ((outcome: 'rejected') => void) | undefined
+      let releaseQ: ((answer: { answers: Array<{ id: string; selected: string[] }> }) => void) | undefined
+      const client = await connectedClient({
+        approvalAnswerer: () => {
+          approvals += 1
+          return new Promise((resolve) => {
+            releaseAp = resolve
+          })
+        },
+        questionAnswerer: () => {
+          questions += 1
+          return new Promise((resolve) => {
+            releaseQ = resolve
+          })
+        },
+      })
+      const approval = {
+        type: 'approval/request',
+        requestId: 'ap-dup',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }
+      const question = {
+        type: 'question/request',
+        requestId: 'q-dup',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }
+      clientSocket!.send(JSON.stringify(approval))
+      clientSocket!.send(JSON.stringify(approval))
+      clientSocket!.send(JSON.stringify(question))
+      clientSocket!.send(JSON.stringify(question))
+      await vi.waitFor(() => {
+        expect(approvals).toBe(1)
+        expect(questions).toBe(1)
+        expect(releaseAp).toBeDefined()
+        expect(releaseQ).toBeDefined()
+      })
+      releaseAp?.('rejected')
+      releaseQ?.({ answers: [{ id: 'q', selected: ['one'] }] })
+      await vi.waitFor(() => {
+        expect(serverMessages.filter(m => m.type === 'approval/result' && m.requestId === 'ap-dup')).toHaveLength(1)
+        expect(serverMessages.filter(m => m.type === 'question/result' && m.requestId === 'q-dup')).toHaveLength(1)
+      })
+      client.dispose()
+    })
+
     it('fails closed to unavailable without an approval answerer and normalizes rogue outcomes', async () => {
       const client = await connectedClient({
         approvalAnswerer: async () => 'yolo' as never,

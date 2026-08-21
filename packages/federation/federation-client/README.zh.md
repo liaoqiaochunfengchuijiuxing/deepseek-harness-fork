@@ -12,7 +12,7 @@
 4. **委派任务执行：** 接收来自 hub 的 `subagent/start` 消息，校验工作区权限约束，使用 pod 本地的模型路由与凭据启动任务，通过 `subagent/chunk` 实时回传流式文本分块，并在完成后返回 `subagent/stop` 终态结果。
 5. **任务中断与取消：** 监听 `subagent/abort` 消息，通过 `AbortController` 中断在途任务执行并清理资源。
 6. **`/remote_send`：** 当挂载了 `ctx.commands` 时，注册一条人类命令，把 `<sessionId> <message>` 经 `session/send` 送到写者节点 inbox。断线、未授权、写者离线与非法发送返回错误结果，不会把文本当作本地模型 prompt 提交。
-7. **审批与问询应答：** 处理 hub 转发的 `approval/request` 与 `question/request`。程序化的 `approvalAnswerer` / `questionAnswerer`，或 `federation/approval-request` / `federation/question-request` waterfall 监听器，在本 pod 上作答。没有应答者时 fail-closed（`unavailable` / 错误结果）。`approval/cancel` 与 `question/cancel` 中止本地等待。
+7. **审批与问询应答：** 处理 hub 转发的 `approval/request` 与 `question/request`。程序化的 `approvalAnswerer` / `questionAnswerer`，或 `federation/approval-request` / `federation/question-request` waterfall 监听器，在本 pod 上作答。没有应答者时 fail-closed（`unavailable` / 错误结果）。`approval/cancel` 与 `question/cancel` 中止本地等待。在途重复的 `requestId` 会合并且不会弹两次。
 
 ## 配置项
 
