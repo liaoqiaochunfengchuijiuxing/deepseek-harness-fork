@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { WebSocket } from 'ws'
 import * as SessionSourcePlugin from '@deepseek-ai/dsh-session-source'
+import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+import ApprovalService from '@deepseek-ai/dsh-user-approval'
+import UserQuestionService, { UserQuestionError } from '@deepseek-ai/dsh-user-questions'
 import * as HubPlugin from '../src/index.ts'
 import {
   FederationHubService,
   FederationHubServer,
+  isApprovalOutcome,
   rawDataToString,
   roleAllowsCommand,
   type FederationRegisteredMessage,
@@ -38,13 +43,24 @@ describe('roleAllowsCommand', () => {
   })
 })
 
+describe('isApprovalOutcome', () => {
+  it('accepts the closed vocabulary and rejects anything else', () => {
+    expect(isApprovalOutcome('allowed-once')).toBe(true)
+    expect(isApprovalOutcome('rejected')).toBe(true)
+    expect(isApprovalOutcome('cancelled')).toBe(true)
+    expect(isApprovalOutcome('unavailable')).toBe(true)
+    expect(isApprovalOutcome('yolo')).toBe(false)
+    expect(isApprovalOutcome(1)).toBe(false)
+  })
+})
+
 describe('FederationHubService', () => {
   let ctx: Context
   let service: FederationHubService
 
   beforeEach(() => {
     ctx = new Context()
-    service = new FederationHubService(ctx)
+    service = new FederationHubService(ctx, { interactionTimeoutMs: 80 })
   })
 
   afterEach(async () => {
@@ -341,6 +357,553 @@ describe('FederationHubService', () => {
       content: [{ type: 'text', text: 'hi' }],
       clientMessageId: 'c-missing',
     })
+  })
+
+  async function commandSession(
+    podId = 'pod-1',
+    sessionId = 'sess-live',
+  ): Promise<{ send: ReturnType<typeof vi.fn> }> {
+    const { socket, send } = createFakeSocket()
+    service.registerPod(podId, 'Pod 1', {}, 'command', socket)
+    ctx.provide('agents', {
+      get: (id: string) => id === sessionId ? { followup: vi.fn() } : undefined,
+    })
+    service.handlePodMessage(podId, {
+      type: 'session/send',
+      requestId: 'r-cmd',
+      sessionId: sessionId as never,
+      content: [{ type: 'text', text: 'hi' }],
+      clientMessageId: 'c-cmd',
+    })
+    await vi.waitFor(() => {
+      expect(send.mock.calls.some((call) => {
+        const parsed = JSON.parse(String(call[0])) as { type?: string }
+        return parsed.type === 'session/send-result'
+      })).toBe(true)
+    })
+    return { send }
+  }
+
+  function approvalReq(sessionId: string, overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
+    return {
+      agent: { session: { id: sessionId } } as Agent,
+      toolName: 'bash',
+      ...overrides,
+    }
+  }
+
+  it('does not steal commander on an idempotent session/send replay', async () => {
+    const { send: sendA } = await commandSession('pod-a')
+    const { socket, send: sendB } = createFakeSocket()
+    service.registerPod('pod-b', 'Pod B', {}, 'command', socket)
+    service.handlePodMessage('pod-b', {
+      type: 'session/send',
+      requestId: 'r-replay',
+      sessionId: 'sess-live' as never,
+      content: [{ type: 'text', text: 'hi-again' }],
+      clientMessageId: 'c-cmd',
+    })
+    await vi.waitFor(() => {
+      expect(sendB).toHaveBeenCalled()
+    })
+    const next = vi.fn(() => Promise.resolve('rejected' as const))
+    const forwarded = service.handleApprovalRequest(approvalReq('sess-live'), next)
+    await vi.waitFor(() => {
+      expect(sendA.mock.calls.some((call) => {
+        const parsed = JSON.parse(String(call[0])) as { type?: string }
+        return parsed.type === 'approval/request'
+      })).toBe(true)
+    })
+    const request = JSON.parse(String(sendA.mock.calls.find((call) => {
+      const parsed = JSON.parse(String(call[0])) as { type?: string }
+      return parsed.type === 'approval/request'
+    })?.[0])) as FederationWireMessage
+    expect(request).toMatchObject({ type: 'approval/request', sessionId: 'sess-live', toolName: 'bash' })
+    if (request.type !== 'approval/request') throw new Error('expected approval/request')
+    service.handlePodMessage('pod-a', {
+      type: 'approval/result',
+      requestId: request.requestId,
+      outcome: 'allowed-once',
+    })
+    await expect(forwarded).resolves.toBe('allowed-once')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('delegates approval/request when no pod commands the session', async () => {
+    const next = vi.fn(() => Promise.resolve('rejected' as const))
+    await expect(service.handleApprovalRequest(approvalReq('sess-none'), next)).resolves.toBe('rejected')
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('fails closed when the commander is offline, read-only, or missing', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const next = vi.fn(() => Promise.resolve('rejected' as const))
+
+    service.setPodStatus('pod-1', 'offline')
+    await expect(service.handleApprovalRequest(approvalReq('sess-live'), next)).resolves.toBe('unavailable')
+
+    const { socket } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod 1', {}, 'read', socket)
+    await expect(service.handleApprovalRequest(approvalReq('sess-live'), next)).resolves.toBe('unavailable')
+
+    service.unregisterPod('pod-1')
+    await expect(service.handleApprovalRequest(approvalReq('sess-live'), next)).resolves.toBe('unavailable')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the commander socket is not open', async () => {
+    await commandSession()
+    const record = (service as unknown as { pods: Map<string, { socket: { readyState: number } }> }).pods.get('pod-1')
+    if (record) record.socket.readyState = 0
+    const next = vi.fn(() => Promise.resolve('rejected' as const))
+    await expect(service.handleApprovalRequest(approvalReq('sess-live'), next)).resolves.toBe('unavailable')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('returns cancelled when the approval signal is already aborted', async () => {
+    await commandSession()
+    const abort = new AbortController()
+    abort.abort()
+    const next = vi.fn(() => Promise.resolve('rejected' as const))
+    await expect(service.handleApprovalRequest(
+      approvalReq('sess-live', { signal: abort.signal }),
+      next,
+    )).resolves.toBe('cancelled')
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('forwards approval to the commanding pod and claims the outcome', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const abort = new AbortController()
+    const pending = service.handleApprovalRequest(
+      approvalReq('sess-live', { callId: 'call-1' as never, reason: 'needs grant', signal: abort.signal }),
+      () => Promise.resolve('rejected'),
+    )
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(request).toMatchObject({
+      type: 'approval/request',
+      sessionId: 'sess-live',
+      toolName: 'bash',
+      callId: 'call-1',
+      reason: 'needs grant',
+    })
+    if (request.type !== 'approval/request') throw new Error('expected approval/request')
+    service.handlePodMessage('pod-1', {
+      type: 'approval/result',
+      requestId: request.requestId,
+      outcome: 'allowed-once',
+    })
+    await expect(pending).resolves.toBe('allowed-once')
+  })
+
+  it('normalizes a rogue approval outcome and ignores a result from another pod', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pending = service.handleApprovalRequest(approvalReq('sess-live'), () => Promise.resolve('rejected'))
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (request.type !== 'approval/request') throw new Error('expected approval/request')
+    service.handlePodMessage('other-pod', {
+      type: 'approval/result',
+      requestId: request.requestId,
+      outcome: 'allowed-once',
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'approval/result',
+      requestId: 'unknown-id',
+      outcome: 'allowed-once',
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'approval/result',
+      requestId: request.requestId,
+    })
+    await expect(pending).resolves.toBe('unavailable')
+  })
+
+  it('sends cancel as a no-op when the commander socket has already closed', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pendingClosed = service.handleApprovalRequest(approvalReq('sess-live'), () => Promise.resolve('rejected'))
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const record = (service as unknown as { pods: Map<string, { socket: { readyState: number } }> }).pods.get('pod-1')
+    if (record) record.socket.readyState = 0
+    await expect(pendingClosed).resolves.toBe('unavailable')
+
+    send.mockClear()
+    if (record) record.socket.readyState = 1
+    const pendingMissing = service.handleApprovalRequest(approvalReq('sess-live'), () => Promise.resolve('rejected'))
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    ;(service as unknown as { pods: Map<string, unknown> }).pods.delete('pod-1')
+    await expect(pendingMissing).resolves.toBe('unavailable')
+  })
+
+  it('skips in-flight interactions that belong to a different pod on offline', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const { socket } = createFakeSocket()
+    service.registerPod('pod-other', 'Other', {}, 'command', socket)
+    const pending = service.handleApprovalRequest(approvalReq('sess-live'), () => Promise.resolve('rejected'))
+    const question = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+    service.setPodStatus('pod-other', 'offline')
+    const approvalReqMsg = send.mock.calls
+      .map(call => JSON.parse(String(call[0])) as FederationWireMessage)
+      .find(msg => msg.type === 'approval/request')
+    const questionReqMsg = send.mock.calls
+      .map(call => JSON.parse(String(call[0])) as FederationWireMessage)
+      .find(msg => msg.type === 'question/request')
+    if (approvalReqMsg?.type !== 'approval/request' || questionReqMsg?.type !== 'question/request') {
+      throw new Error('expected approval/request and question/request')
+    }
+    service.handlePodMessage('pod-1', {
+      type: 'approval/result',
+      requestId: approvalReqMsg.requestId,
+      outcome: 'rejected',
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: questionReqMsg.requestId,
+      answers: [{ id: 'q', selected: ['ok'] }],
+    })
+    await expect(pending).resolves.toBe('rejected')
+    await expect(question).resolves.toEqual({ answers: [{ id: 'q', selected: ['ok'] }] })
+  })
+
+  it('times out an unanswered approval and sends cancel', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pending = service.handleApprovalRequest(approvalReq('sess-live'), () => Promise.resolve('rejected'))
+    await expect(pending).resolves.toBe('unavailable')
+    const types = send.mock.calls.map(call => (JSON.parse(String(call[0])) as { type: string }).type)
+    expect(types).toContain('approval/request')
+    expect(types).toContain('approval/cancel')
+  })
+
+  it('settles cancelled and sends cancel when the approval signal aborts', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const abort = new AbortController()
+    const pending = service.handleApprovalRequest(
+      approvalReq('sess-live', { signal: abort.signal }),
+      () => Promise.resolve('rejected'),
+    )
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    abort.abort()
+    await expect(pending).resolves.toBe('cancelled')
+    const types = send.mock.calls.map(call => (JSON.parse(String(call[0])) as { type: string }).type)
+    expect(types).toContain('approval/cancel')
+  })
+
+  it('fails closed when sending the approval request throws', async () => {
+    const { send } = await commandSession()
+    send.mockImplementation(() => {
+      throw new Error('socket exploded')
+    })
+    await expect(service.handleApprovalRequest(
+      approvalReq('sess-live'),
+      () => Promise.resolve('rejected'),
+    )).resolves.toBe('unavailable')
+  })
+
+  it('routes a commanded question to the pod and returns answers', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const agent = { session: { id: 'sess-live' } } as Agent
+    const pending = service.routeQuestion({
+      questions: [{ id: 'q1', question: 'Continue?' }],
+      agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    expect(request).toMatchObject({ type: 'question/request', sessionId: 'sess-live' })
+    if (request.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: request.requestId,
+      answers: [{ id: 'q1', selected: ['yes'] }],
+    })
+    await expect(pending).resolves.toEqual({ answers: [{ id: 'q1', selected: ['yes'] }] })
+  })
+
+  it('falls back when no pod commands the question session', async () => {
+    const fallback = vi.fn(() => Promise.resolve({ answers: [{ id: 'q', selected: ['local'] }] }))
+    await expect(service.routeQuestion({ questions: [{ id: 'q', question: '?' }] }, fallback))
+      .resolves.toEqual({ answers: [{ id: 'q', selected: ['local'] }] })
+    await expect(service.routeQuestion({ questions: [{ id: 'q', question: '?' }] }))
+      .rejects.toMatchObject({ code: 'NO_PROVIDER' })
+  })
+
+  it('rejects a commanded question when the pod is unavailable or the signal is aborted', async () => {
+    await commandSession()
+    const abort = new AbortController()
+    abort.abort()
+    await expect(service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+      signal: abort.signal,
+    })).rejects.toMatchObject({ code: 'ASK_ABORTED' })
+
+    service.setPodStatus('pod-1', 'offline')
+    await expect(service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+  })
+
+  it('rejects invalid question answers, foreign results, and pod error payloads', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pendingInvalid = service.routeQuestion({
+      questions: [{ id: 'q1', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const first = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (first.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('other', {
+      type: 'question/result',
+      requestId: first.requestId,
+      answers: [{ id: 'q1', selected: ['stolen'] }],
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: 'unknown-q',
+      answers: [{ id: 'q1', selected: ['nope'] }],
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: first.requestId,
+      answers: [{ id: 1, selected: ['x'] } as never],
+    })
+    await expect(pendingInvalid).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+
+    send.mockClear()
+    const pendingError = service.routeQuestion({
+      questions: [{ id: 'q2', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const second = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (second.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: second.requestId,
+      error: { code: 'ASK_ABORTED', message: 'user walked away' },
+    })
+    await expect(pendingError).rejects.toBeInstanceOf(UserQuestionError)
+    await expect(pendingError).rejects.toMatchObject({ code: 'ASK_ABORTED', message: 'user walked away' })
+  })
+
+  it('times out an unanswered question and aborts a live question signal', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const timedOut = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await expect(timedOut).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+    expect(send.mock.calls.map(call => (JSON.parse(String(call[0])) as { type: string }).type))
+      .toContain('question/cancel')
+
+    send.mockClear()
+    const abort = new AbortController()
+    const aborted = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+      signal: abort.signal,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    abort.abort()
+    await expect(aborted).rejects.toMatchObject({ code: 'ASK_ABORTED' })
+  })
+
+  it('rejects a question when sending the request throws', async () => {
+    const { send } = await commandSession()
+    send.mockImplementation(() => {
+      throw new Error('socket exploded')
+    })
+    await expect(service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+  })
+
+  it('settles in-flight approvals and questions when the commander goes offline', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const approval = service.handleApprovalRequest(
+      approvalReq('sess-live'),
+      () => Promise.resolve('rejected'),
+    )
+    const question = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+    service.setPodStatus('pod-1', 'offline')
+    await expect(approval).resolves.toBe('unavailable')
+    await expect(question).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+  })
+
+  it('settles in-flight interactions when the hub context is disposed', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const approval = service.handleApprovalRequest(
+      approvalReq('sess-live'),
+      () => Promise.resolve('rejected'),
+    )
+    const question = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+    await ctx.fiber.dispose()
+    await expect(approval).resolves.toBe('unavailable')
+    await expect(question).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+    ctx = new Context()
+    service = new FederationHubService(ctx, { interactionTimeoutMs: 80 })
+  })
+
+  it('binds the approval waterfall and user-questions ask intercept', async () => {
+    await ctx.plugin(ApprovalService)
+    await ctx.plugin(UserQuestionService)
+    service.bindInteractionBridges()
+    const localAsk = vi.fn(() => Promise.resolve({ answers: [{ id: 'q', selected: ['local'] }] }))
+    ctx.userQuestions.registerProvider({ ask: localAsk })
+    await expect(ctx.userQuestions.ask({ questions: [{ id: 'q', question: '?' }] }))
+      .resolves.toEqual({ answers: [{ id: 'q', selected: ['local'] }] })
+
+    const { send } = await commandSession()
+    send.mockClear()
+    const events: Array<{ type: string }> = [{ type: 'turn/start' }]
+    const agent = {
+      session: {
+        id: 'sess-live',
+        events,
+        append: (type: string, data: Record<string, unknown>) => {
+          events.push({ type })
+          return { type, data }
+        },
+      },
+    } as unknown as Agent
+    const outcomeP = ctx.approval.request({ agent, toolName: 'bash' })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (request.type !== 'approval/request') throw new Error('expected approval/request')
+    service.handlePodMessage('pod-1', {
+      type: 'approval/result',
+      requestId: request.requestId,
+      outcome: 'allowed-once',
+    })
+    await expect(outcomeP).resolves.toBe('allowed-once')
+
+    send.mockClear()
+    localAsk.mockClear()
+    const asked = ctx.userQuestions.ask({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const qreq = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (qreq.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: qreq.requestId,
+      answers: [{ id: 'q', selected: ['remote'] }],
+    })
+    await expect(asked).resolves.toEqual({ answers: [{ id: 'q', selected: ['remote'] }] })
+    expect(localAsk).not.toHaveBeenCalled()
+  })
+
+  it('rejects empty or malformed question answer items', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pending = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (request.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: request.requestId,
+      answers: [],
+    })
+    await expect(pending).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+
+    send.mockClear()
+    const pendingNull = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const second = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (second.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: second.requestId,
+      answers: [null as never, { id: 'q', selected: [1 as never] }, { id: 'q', selected: 'yes' as never }],
+    })
+    await expect(pendingNull).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
+  })
+
+  it('maps an empty error payload on question/result to COMMANDER_UNAVAILABLE', async () => {
+    const { send } = await commandSession()
+    send.mockClear()
+    const pending = service.routeQuestion({
+      questions: [{ id: 'q', question: '?' }],
+      agent: { session: { id: 'sess-live' } } as Agent,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    const request = JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+    if (request.type !== 'question/request') throw new Error('expected question/request')
+    service.handlePodMessage('pod-1', {
+      type: 'question/result',
+      requestId: request.requestId,
+      error: { code: '', message: '' },
+    })
+    await expect(pending).rejects.toMatchObject({ code: 'COMMANDER_UNAVAILABLE' })
   })
 })
 
@@ -717,6 +1280,18 @@ describe('federation-hub apply', () => {
     const ctx = new Context()
     await ctx.plugin(SessionSourcePlugin)
     await ctx.plugin(HubPlugin, {
+      port: 0,
+      host: '127.0.0.1',
+      token: 'apply-token',
+      interactionTimeoutMs: 50,
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('apply uses the default interaction timeout when the field is omitted', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionSourcePlugin)
+    HubPlugin.apply(ctx, {
       port: 0,
       host: '127.0.0.1',
       token: 'apply-token',

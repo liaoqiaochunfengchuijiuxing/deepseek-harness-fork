@@ -5,13 +5,26 @@
  * @module @deepseek-ai/dsh-federation-hub/service
  */
 
+import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type WebSocket from 'ws'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
+import type {} from '@deepseek-ai/dsh-user-approval'
 import {
+  UserQuestionError,
+  type AskUserQuestionAnswer,
+  type AskUserQuestionAnswerItem,
+  type AskUserQuestionRequest,
+} from '@deepseek-ai/dsh-user-questions'
+import type {} from '@deepseek-ai/dsh-user-questions'
+import {
+  isApprovalOutcome,
   roleAllowsCommand,
+  type FederationApprovalResultMessage,
+  type FederationQuestionResultMessage,
   type FederationSessionSendErrorCode,
   type FederationSessionSendMessage,
   type FederationTokenRole,
@@ -66,6 +79,29 @@ interface InternalPodRecord {
   socket: WebSocket
 }
 
+interface PendingApproval {
+  podId: string
+  settle: (outcome: ApprovalOutcome) => void
+  timer: NodeJS.Timeout
+  abort: AbortSignal | undefined
+  onAbort: (() => void) | undefined
+}
+
+interface PendingQuestion {
+  podId: string
+  resolve: (answer: AskUserQuestionAnswer) => void
+  reject: (error: UserQuestionError) => void
+  timer: NodeJS.Timeout
+  abort: AbortSignal | undefined
+  onAbort: (() => void) | undefined
+}
+
+/** Options for {@link FederationHubService}. */
+export interface FederationHubServiceOptions {
+  /** Bound (ms) on an approval or question round-trip to the commanding pod. */
+  interactionTimeoutMs?: number
+}
+
 /**
  * Service managing connected pods and message routing across the federation hub.
  */
@@ -75,9 +111,50 @@ export class FederationHubService extends Service {
   private readonly subscriptions = new Map<string, () => void>()
   private readonly sendTails = new Map<string, Promise<void>>()
   private readonly acceptedSends = new Map<string, string>()
+  private readonly commanders = new Map<string, string>()
+  private readonly pendingApprovals = new Map<string, PendingApproval>()
+  private readonly pendingQuestions = new Map<string, PendingQuestion>()
+  private readonly interactionTimeoutMs: number
 
-  constructor(ctx: Context) {
+  /**
+   * Create the hub service and bind optional approval/question bridges.
+   * @param ctx - owning Cordis context.
+   * @param options - interaction timeout for commanding-pod round-trips.
+   */
+  constructor(ctx: Context, options: FederationHubServiceOptions = {}) {
     super(ctx, 'federationHub')
+    this.interactionTimeoutMs = options.interactionTimeoutMs ?? 300_000
+    this.ctx.effect(() => () => {
+      this.failAllPending()
+    }, 'federation.hub.pending-interactions')
+  }
+
+  /**
+   * Bind `approval/request` and `ctx.userQuestions.ask` so commanded sessions
+   * route to the commanding pod. Call after those services are composed, or
+   * from plugin apply so `inject` waits for them.
+   */
+  bindInteractionBridges(): void {
+    this.ctx.inject(['approval'], (scope) => {
+      scope.on(
+        'approval/request',
+        (req, next) => this.handleApprovalRequest(req, next),
+        { prepend: true },
+      )
+    })
+    this.ctx.inject(['userQuestions'], (scope) => {
+      const questions = scope.userQuestions
+      const originalAsk = questions.ask.bind(questions)
+      scope.effect(() => {
+        questions.ask = (request: AskUserQuestionRequest) =>
+          this.routeQuestion(request, () => originalAsk(request))
+        /* v8 ignore start -- inject fiber dispose restores the original ask */
+        return () => {
+          questions.ask = originalAsk
+        }
+        /* v8 ignore stop */
+      }, 'federation.hub.routeUserQuestions')
+    })
   }
 
   /**
@@ -155,6 +232,7 @@ export class FederationHubService extends Service {
    * @param status - new status.
    */
   setPodStatus(podId: string, status: PodStatus): void {
+    if (status === 'offline') this.failPendingForPod(podId)
     const record = this.pods.get(podId)
     if (record && record.info.status !== status) {
       record.info.status = status
@@ -445,6 +523,14 @@ export class FederationHubService extends Service {
         void this.handleSessionSend(podId, message)
         break
       }
+      case 'approval/result': {
+        this.settleApprovalResult(podId, message)
+        break
+      }
+      case 'question/result': {
+        this.settleQuestionResult(podId, message)
+        break
+      }
       default:
         break
     }
@@ -530,6 +616,7 @@ export class FederationHubService extends Service {
         })
         agent.followup(userMessage)
         this.acceptedSends.set(idempotencyKey, userMessage.id)
+        this.commanders.set(sessionKey, podId)
         this.replySessionSend(podId, message.requestId, { messageId: userMessage.id })
       } catch (err: unknown) {
         this.replySessionSend(podId, message.requestId, {
@@ -544,5 +631,237 @@ export class FederationHubService extends Service {
     })
     this.sendTails.set(sessionKey, next)
     await next
+  }
+
+  /**
+   * Forward an approval to the commanding pod, or `next()` when this hub does
+   * not own the decision. A recorded commander that cannot answer fails closed
+   * to `'unavailable'` and does not fall through to other answerers.
+   * @param req - pending decision from `approval/request`.
+   * @param next - remaining waterfall.
+   * @returns claimed outcome, or the rest of the chain.
+   */
+  handleApprovalRequest(
+    req: ApprovalRequest,
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
+    const podId = this.commanders.get(String(req.agent.session.id))
+    if (podId === undefined) return next()
+    if (req.signal?.aborted === true) return Promise.resolve('cancelled')
+    if (!this.canForwardTo(podId)) return Promise.resolve('unavailable')
+    return this.forwardApproval(podId, req)
+  }
+
+  /**
+   * Forward a user question to the commanding pod. Without a commander, call
+   * `fallback` (the registered local provider) when provided.
+   * @param request - questions plus optional calling agent.
+   * @param fallback - local `ctx.userQuestions.ask` when this hub does not own the ask.
+   * @returns the human's answer.
+   */
+  routeQuestion(
+    request: AskUserQuestionRequest,
+    fallback?: () => Promise<AskUserQuestionAnswer>,
+  ): Promise<AskUserQuestionAnswer> {
+    const sessionId = request.agent?.session.id
+    const podId = sessionId === undefined ? undefined : this.commanders.get(String(sessionId))
+    if (sessionId === undefined || podId === undefined) {
+      return fallback ? fallback() : Promise.reject(new UserQuestionError(
+        'no user-questions provider is registered',
+        'NO_PROVIDER',
+      ))
+    }
+    if (request.signal?.aborted === true) {
+      return Promise.reject(new UserQuestionError(
+        'ask_user_question was aborted before the user answered',
+        'ASK_ABORTED',
+      ))
+    }
+    if (!this.canForwardTo(podId)) {
+      return Promise.reject(new UserQuestionError(
+        'commanding pod is unavailable',
+        'COMMANDER_UNAVAILABLE',
+      ))
+    }
+    return this.forwardQuestion(podId, sessionId, request)
+  }
+
+  private canForwardTo(podId: string): boolean {
+    const record = this.pods.get(podId)
+    return record !== undefined
+      && record.info.status === 'online'
+      && roleAllowsCommand(record.info.role)
+      && record.socket.readyState === 1
+  }
+
+  private sendToPod(podId: string, message: FederationWireMessage): boolean {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return false
+    try {
+      record.socket.send(JSON.stringify(message))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private forwardApproval(podId: string, req: ApprovalRequest): Promise<ApprovalOutcome> {
+    const requestId = randomUUID()
+    return new Promise<ApprovalOutcome>((resolve) => {
+      const settle = (outcome: ApprovalOutcome): void => {
+        const pending = this.pendingApprovals.get(requestId)
+        /* v8 ignore next -- abort and timeout can both fire after the first settle */
+        if (pending === undefined) return
+        this.pendingApprovals.delete(requestId)
+        clearTimeout(pending.timer)
+        if (pending.abort !== undefined && pending.onAbort !== undefined) {
+          pending.abort.removeEventListener('abort', pending.onAbort)
+        }
+        resolve(outcome)
+      }
+      const onAbort = (): void => {
+        this.sendToPod(podId, { type: 'approval/cancel', requestId })
+        settle('cancelled')
+      }
+      const timer = setTimeout(() => {
+        this.sendToPod(podId, { type: 'approval/cancel', requestId })
+        settle('unavailable')
+      }, this.interactionTimeoutMs)
+      this.pendingApprovals.set(requestId, {
+        podId,
+        settle,
+        timer,
+        abort: req.signal,
+        onAbort,
+      })
+      req.signal?.addEventListener('abort', onAbort, { once: true })
+      const sent = this.sendToPod(podId, {
+        type: 'approval/request',
+        requestId,
+        sessionId: req.agent.session.id,
+        toolName: req.toolName,
+        ...req.callId !== undefined ? { callId: String(req.callId) } : {},
+        ...req.reason !== undefined ? { reason: req.reason } : {},
+      })
+      if (!sent) settle('unavailable')
+    })
+  }
+
+  private forwardQuestion(
+    podId: string,
+    sessionId: string,
+    request: AskUserQuestionRequest,
+  ): Promise<AskUserQuestionAnswer> {
+    const requestId = randomUUID()
+    return new Promise<AskUserQuestionAnswer>((resolve, reject) => {
+      const finish = (action: () => void): void => {
+        const pending = this.pendingQuestions.get(requestId)
+        /* v8 ignore next -- abort and timeout can both fire after the first settle */
+        if (pending === undefined) return
+        this.pendingQuestions.delete(requestId)
+        clearTimeout(pending.timer)
+        if (pending.abort !== undefined && pending.onAbort !== undefined) {
+          pending.abort.removeEventListener('abort', pending.onAbort)
+        }
+        action()
+      }
+      const onAbort = (): void => {
+        this.sendToPod(podId, { type: 'question/cancel', requestId })
+        finish(() => {
+          reject(new UserQuestionError(
+            'ask_user_question was aborted before the user answered',
+            'ASK_ABORTED',
+          ))
+        })
+      }
+      const timer = setTimeout(() => {
+        this.sendToPod(podId, { type: 'question/cancel', requestId })
+        finish(() => {
+          reject(new UserQuestionError(
+            'commanding pod did not answer in time',
+            'COMMANDER_UNAVAILABLE',
+          ))
+        })
+      }, this.interactionTimeoutMs)
+      this.pendingQuestions.set(requestId, {
+        podId,
+        resolve: (answer) => { finish(() => { resolve(answer) }) },
+        reject: (error) => { finish(() => { reject(error) }) },
+        timer,
+        abort: request.signal,
+        onAbort,
+      })
+      request.signal?.addEventListener('abort', onAbort, { once: true })
+      const sent = this.sendToPod(podId, {
+        type: 'question/request',
+        requestId,
+        sessionId: SessionId(sessionId),
+        questions: request.questions,
+      })
+      if (!sent) {
+        this.pendingQuestions.get(requestId)?.reject(new UserQuestionError(
+          'commanding pod is unavailable',
+          'COMMANDER_UNAVAILABLE',
+        ))
+      }
+    })
+  }
+
+  private settleApprovalResult(podId: string, message: FederationApprovalResultMessage): void {
+    const pending = this.pendingApprovals.get(message.requestId)
+    if (pending === undefined || pending.podId !== podId) return
+    pending.settle(isApprovalOutcome(message.outcome) ? message.outcome : 'unavailable')
+  }
+
+  private settleQuestionResult(podId: string, message: FederationQuestionResultMessage): void {
+    const pending = this.pendingQuestions.get(message.requestId)
+    if (pending === undefined || pending.podId !== podId) return
+    if (this.isAnswerItems(message.answers)) {
+      pending.resolve({ answers: message.answers })
+      return
+    }
+    const error = message.error
+    pending.reject(new UserQuestionError(
+      typeof error?.message === 'string' && error.message.length > 0
+        ? error.message
+        : 'commanding pod returned an invalid answer',
+      typeof error?.code === 'string' && error.code.length > 0
+        ? error.code
+        : 'COMMANDER_UNAVAILABLE',
+    ))
+  }
+
+  private isAnswerItems(value: unknown): value is AskUserQuestionAnswerItem[] {
+    return Array.isArray(value) && value.length > 0 && value.every((item) => {
+      if (typeof item !== 'object' || item === null) return false
+      const record = item as { id?: unknown; selected?: unknown }
+      return typeof record.id === 'string'
+        && Array.isArray(record.selected)
+        && record.selected.every(entry => typeof entry === 'string')
+    })
+  }
+
+  private failPendingForPod(podId: string): void {
+    for (const pending of [...this.pendingApprovals.values()]) {
+      if (pending.podId === podId) pending.settle('unavailable')
+    }
+    for (const pending of [...this.pendingQuestions.values()]) {
+      if (pending.podId === podId) {
+        pending.reject(new UserQuestionError(
+          'commanding pod went offline',
+          'COMMANDER_UNAVAILABLE',
+        ))
+      }
+    }
+  }
+
+  private failAllPending(): void {
+    for (const pending of [...this.pendingApprovals.values()]) pending.settle('unavailable')
+    for (const pending of [...this.pendingQuestions.values()]) {
+      pending.reject(new UserQuestionError(
+        'federation hub disposed',
+        'COMMANDER_UNAVAILABLE',
+      ))
+    }
   }
 }

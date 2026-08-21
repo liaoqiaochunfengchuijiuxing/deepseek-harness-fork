@@ -19,7 +19,10 @@ export const name = 'federation-hub'
 export const inject = ['sessionSources']
 
 /** Config schema for federation hub. */
-export interface Config extends FederationHubConfig {}
+export interface Config extends FederationHubConfig {
+  /** Bound (ms) on an approval or question round-trip to the commanding pod. */
+  interactionTimeoutMs?: number
+}
 
 export const Config: Schema<Config> = Schema.object({
   port: Schema.natural().max(65535).default(3080).description('Listen port for HTTP and WebSocket federation server'),
@@ -29,6 +32,7 @@ export const Config: Schema<Config> = Schema.object({
   heartbeatTimeoutMs: Schema.natural().default(30000).description('Timeout (ms) without heartbeat before marking a pod offline'),
   allowAnonymous: Schema.boolean().default(false).description('Whether to allow unauthenticated connections'),
   token: Schema.string().description('Admin/shared authentication token'),
+  interactionTimeoutMs: Schema.natural().default(300000).description('Bound (ms) on an approval or question round-trip to the commanding pod'),
 })
 
 /**
@@ -43,7 +47,10 @@ function toError(value: unknown): Error {
 }
 
 export function apply(ctx: Context, config: Config): void {
-  const service = new FederationHubService(ctx)
+  const service = new FederationHubService(ctx, {
+    interactionTimeoutMs: config.interactionTimeoutMs ?? 300_000,
+  })
+  service.bindInteractionBridges()
   const server = new FederationHubServer(service, config)
 
   ctx.effect(() => {

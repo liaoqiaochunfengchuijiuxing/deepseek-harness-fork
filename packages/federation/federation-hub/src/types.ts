@@ -7,6 +7,10 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionInspectionResult, SessionSummary } from '@deepseek-ai/dsh-session-source'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
+import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
+
+export type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 
 /** Token authorization permission level for federation. */
 export type FederationTokenRole = 'read' | 'command' | 'manage' | 'takeover'
@@ -325,6 +329,89 @@ export interface FederationSessionSendResultMessage {
   error?: string
 }
 
+/** Closed approval outcomes accepted on the federation wire. */
+const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ['allowed-once', 'rejected', 'cancelled', 'unavailable']
+
+/**
+ * Whether `value` is a closed {@link ApprovalOutcome}.
+ * @param value - untrusted wire payload.
+ * @returns true when the value is one of the four outcomes.
+ */
+export function isApprovalOutcome(value: unknown): value is ApprovalOutcome {
+  return typeof value === 'string' && (APPROVAL_OUTCOMES as readonly string[]).includes(value)
+}
+
+/** Forward one approval question to the commanding pod. */
+export interface FederationApprovalRequestMessage {
+  /** Discriminant message tag. */
+  type: 'approval/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the approval belongs to. */
+  sessionId: SessionId
+  /** Tool the question is about. */
+  toolName: string
+  /** Exact tool call id when the asker had one. */
+  callId?: string
+  /** Asker's human-readable explanation. */
+  reason?: string
+}
+
+/** Commanding pod's decision for a {@link FederationApprovalRequestMessage}. */
+export interface FederationApprovalResultMessage {
+  /** Discriminant message tag. */
+  type: 'approval/result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Closed outcome when the pod answered. */
+  outcome?: ApprovalOutcome
+}
+
+/** Withdraw a still-pending {@link FederationApprovalRequestMessage}. */
+export interface FederationApprovalCancelMessage {
+  /** Discriminant message tag. */
+  type: 'approval/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+}
+
+/** Forward one user-questions ask to the commanding pod. */
+export interface FederationQuestionRequestMessage {
+  /** Discriminant message tag. */
+  type: 'question/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the question belongs to. */
+  sessionId: SessionId
+  /** Questions to display on the pod. */
+  questions: AskUserQuestionItem[]
+}
+
+/** Commanding pod's answer or failure for a {@link FederationQuestionRequestMessage}. */
+export interface FederationQuestionResultMessage {
+  /** Discriminant message tag. */
+  type: 'question/result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Structured answers when the pod collected them. */
+  answers?: AskUserQuestionAnswerItem[]
+  /** Failure when the pod did not collect an answer. */
+  error?: {
+    /** Failure code. */
+    code: string
+    /** Failure message. */
+    message: string
+  }
+}
+
+/** Withdraw a still-pending {@link FederationQuestionRequestMessage}. */
+export interface FederationQuestionCancelMessage {
+  /** Discriminant message tag. */
+  type: 'question/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+}
+
 /** Union of all messages sent over the federation WebSocket connection. */
 export type FederationWireMessage =
   | FederationRegisterMessage
@@ -349,3 +436,9 @@ export type FederationWireMessage =
   | FederationSessionUnsubscribeMessage
   | FederationSessionSendMessage
   | FederationSessionSendResultMessage
+  | FederationApprovalRequestMessage
+  | FederationApprovalResultMessage
+  | FederationApprovalCancelMessage
+  | FederationQuestionRequestMessage
+  | FederationQuestionResultMessage
+  | FederationQuestionCancelMessage

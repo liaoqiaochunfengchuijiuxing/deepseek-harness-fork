@@ -8,6 +8,10 @@
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
+import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
+
+export type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 
 /** Pod client connection lifecycle status. */
 export type PodConnectionStatus = 'disconnected' | 'connecting' | 'connected'
@@ -157,6 +161,89 @@ export type SessionSendResult =
   | { ok: true; messageId: string }
   | { ok: false; code: 'disconnected' | 'timeout' | 'writer-offline' | 'unauthorized' | 'invalid'; message: string }
 
+/** Closed approval outcomes accepted on the federation wire. */
+const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ['allowed-once', 'rejected', 'cancelled', 'unavailable']
+
+/**
+ * Whether `value` is a closed {@link ApprovalOutcome}.
+ * @param value - untrusted answerer or wire payload.
+ * @returns true when the value is one of the four outcomes.
+ */
+export function isApprovalOutcome(value: unknown): value is ApprovalOutcome {
+  return typeof value === 'string' && (APPROVAL_OUTCOMES as readonly string[]).includes(value)
+}
+
+/** Hub-forwarded approval for a session this pod commands. */
+export interface FederationApprovalRequestPayload {
+  /** Discriminant message type tag. */
+  type: 'approval/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the approval belongs to. */
+  sessionId: SessionId
+  /** Tool the question is about. */
+  toolName: string
+  /** Exact tool call id when the asker had one. */
+  callId?: string
+  /** Asker's human-readable explanation. */
+  reason?: string
+}
+
+/** This pod's decision for a {@link FederationApprovalRequestPayload}. */
+export interface FederationApprovalResultPayload {
+  /** Discriminant message type tag. */
+  type: 'approval/result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Closed outcome. */
+  outcome: ApprovalOutcome
+}
+
+/** Withdraw a still-pending {@link FederationApprovalRequestPayload}. */
+export interface FederationApprovalCancelPayload {
+  /** Discriminant message type tag. */
+  type: 'approval/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+}
+
+/** Hub-forwarded user question for a session this pod commands. */
+export interface FederationQuestionRequestPayload {
+  /** Discriminant message type tag. */
+  type: 'question/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the question belongs to. */
+  sessionId: SessionId
+  /** Questions to display. */
+  questions: AskUserQuestionItem[]
+}
+
+/** This pod's answer or failure for a {@link FederationQuestionRequestPayload}. */
+export interface FederationQuestionResultPayload {
+  /** Discriminant message type tag. */
+  type: 'question/result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Structured answers when collected. */
+  answers?: AskUserQuestionAnswerItem[]
+  /** Failure when this pod did not collect an answer. */
+  error?: {
+    /** Failure code. */
+    code: string
+    /** Failure message. */
+    message: string
+  }
+}
+
+/** Withdraw a still-pending {@link FederationQuestionRequestPayload}. */
+export interface FederationQuestionCancelPayload {
+  /** Discriminant message type tag. */
+  type: 'question/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+}
+
 /** Incoming or outgoing wire message union on client side. */
 export type FederationClientWireMessage =
   | FederationRegisterPayload
@@ -169,6 +256,12 @@ export type FederationClientWireMessage =
   | RemoteSubagentAbortPayload
   | FederationSessionSendPayload
   | FederationSessionSendResultPayload
+  | FederationApprovalRequestPayload
+  | FederationApprovalResultPayload
+  | FederationApprovalCancelPayload
+  | FederationQuestionRequestPayload
+  | FederationQuestionResultPayload
+  | FederationQuestionCancelPayload
 
 /** Custom execution handler signature for executing delegated tasks. */
 export type DelegatedTaskExecutor = (

@@ -664,6 +664,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
         returns: 'Number of running tasks.',
       },
+      {
+        signature: 'sendToSession( sessionId: SessionId, content: ContentBlock[], clientMessageId: string, ): Promise<SessionSendResult>',
+        description: 'Deliver user content to a writer-node session inbox.',
+        parameters: [{ name: 'sessionId', description: 'target session on the writer node.' }, { name: 'content', description: 'user-role content blocks.' }, { name: 'clientMessageId', description: 'idempotency key scoped to `sessionId`.' }],
+        returns: 'accepted message id, or a structured failure.',
+      },
     ],
   },
   {
@@ -671,6 +677,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     summary: 'Service managing connected pods and message routing across the federation hub.',
     description: 'Service managing connected pods and message routing across the federation hub.',
     methods: [
+      {
+        signature: 'bindInteractionBridges(): void',
+        description: 'Bind `approval/request` and `ctx.userQuestions.ask` so commanded sessions route to the commanding pod. Call after those services are composed, or from plugin apply so `inject` waits for them.',
+        parameters: [],
+      },
       {
         signature: 'listPods(): PodInfo[]',
         description: 'List all currently registered pods.',
@@ -718,6 +729,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'handlePodMessage(podId: string, message: FederationWireMessage): void',
         description: 'Process an incoming message received from a pod socket.',
         parameters: [{ name: 'podId', description: 'identifier of the sender pod.' }, { name: 'message', description: 'parsed wire message.' }],
+      },
+      {
+        signature: 'handleApprovalRequest( req: ApprovalRequest, next: () => Promise<ApprovalOutcome>, ): Promise<ApprovalOutcome>',
+        description: 'Forward an approval to the commanding pod, or `next()` when this hub does not own the decision. A recorded commander that cannot answer fails closed to `\'unavailable\'` and does not fall through to other answerers.',
+        parameters: [{ name: 'req', description: 'pending decision from `approval/request`.' }, { name: 'next', description: 'remaining waterfall.' }],
+        returns: 'claimed outcome, or the rest of the chain.',
+      },
+      {
+        signature: 'routeQuestion( request: AskUserQuestionRequest, fallback?: () => Promise<AskUserQuestionAnswer>, ): Promise<AskUserQuestionAnswer>',
+        description: 'Forward a user question to the commanding pod. Without a commander, call `fallback` (the registered local provider) when provided.',
+        parameters: [{ name: 'request', description: 'questions plus optional calling agent.' }, { name: 'fallback', description: 'local `ctx.userQuestions.ask` when this hub does not own the ask.' }],
+        returns: 'the human\'s answer.',
       },
     ],
   },
@@ -2590,6 +2613,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'change', description: 'domain, table (`\'\'` for global), key (`\'\'` for global), operation discriminant, and on `put` the new snapshot.' }],
   },
   {
+    name: 'federation/approval-request',
+    mode: 'waterfall',
+    signature: '\'federation/approval-request\'( req: FederationApprovalRequestPayload, next: () => Promise<ApprovalOutcome>, ): Promise<ApprovalOutcome>',
+    summary: 'Answer a hub-forwarded approval for a session this pod commands.',
+    description: 'Answer a hub-forwarded approval for a session this pod commands. Return an outcome to claim or call `next()`; no claim fails closed to `\'unavailable\'`.',
+    parameters: [{ name: 'req', description: 'the forwarded approval.' }],
+  },
+  {
     name: 'federation/pod-offline',
     mode: 'emit',
     signature: '\'federation/pod-offline\': (podId: string) => void',
@@ -2612,6 +2643,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Emitted when a pod is explicitly removed from the registry.',
     description: 'Emitted when a pod is explicitly removed from the registry.',
     parameters: [{ name: 'podId', description: 'Identifier of the unregistered pod.' }],
+  },
+  {
+    name: 'federation/question-request',
+    mode: 'waterfall',
+    signature: '\'federation/question-request\'( req: FederationQuestionRequestPayload, next: () => Promise<AskUserQuestionAnswer>, ): Promise<AskUserQuestionAnswer>',
+    summary: 'Answer a hub-forwarded user question for a session this pod commands.',
+    description: 'Answer a hub-forwarded user question for a session this pod commands. Return an answer to claim or call `next()`; no claim fails closed.',
+    parameters: [{ name: 'req', description: 'the forwarded question.' }],
   },
   {
     name: 'fs/edit-intent',
@@ -3302,6 +3341,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface EpochHeader {\n    config: LlmCallConfig;\n    adapterDefaults?: LlmCallConfigAdapterDefaults;\n    system?: string;\n    tools?: ToolSchema[];\n}',
   },
   {
+    name: 'FederationApprovalCancelMessage',
+    declaration: 'export interface FederationApprovalCancelMessage {\n    type: \'approval/cancel\';\n    requestId: string;\n}',
+  },
+  {
+    name: 'FederationApprovalRequestMessage',
+    declaration: 'export interface FederationApprovalRequestMessage {\n    type: \'approval/request\';\n    requestId: string;\n    sessionId: SessionId;\n    toolName: string;\n    callId?: string;\n    reason?: string;\n}',
+  },
+  {
+    name: 'FederationApprovalRequestPayload',
+    declaration: 'export interface FederationApprovalRequestPayload {\n    type: \'approval/request\';\n    requestId: string;\n    sessionId: SessionId;\n    toolName: string;\n    callId?: string;\n    reason?: string;\n}',
+  },
+  {
+    name: 'FederationApprovalResultMessage',
+    declaration: 'export interface FederationApprovalResultMessage {\n    type: \'approval/result\';\n    requestId: string;\n    outcome?: ApprovalOutcome;\n}',
+  },
+  {
     name: 'FederationHeartbeatAckMessage',
     declaration: 'export interface FederationHeartbeatAckMessage {\n    type: \'federation/heartbeat_ack\';\n    timestamp: number;\n}',
   },
@@ -3316,6 +3371,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'FederationPongMessage',
     declaration: 'export interface FederationPongMessage {\n    type: \'pong\';\n}',
+  },
+  {
+    name: 'FederationQuestionCancelMessage',
+    declaration: 'export interface FederationQuestionCancelMessage {\n    type: \'question/cancel\';\n    requestId: string;\n}',
+  },
+  {
+    name: 'FederationQuestionRequestMessage',
+    declaration: 'export interface FederationQuestionRequestMessage {\n    type: \'question/request\';\n    requestId: string;\n    sessionId: SessionId;\n    questions: AskUserQuestionItem[];\n}',
+  },
+  {
+    name: 'FederationQuestionRequestPayload',
+    declaration: 'export interface FederationQuestionRequestPayload {\n    type: \'question/request\';\n    requestId: string;\n    sessionId: SessionId;\n    questions: AskUserQuestionItem[];\n}',
+  },
+  {
+    name: 'FederationQuestionResultMessage',
+    declaration: 'export interface FederationQuestionResultMessage {\n    type: \'question/result\';\n    requestId: string;\n    answers?: AskUserQuestionAnswerItem[];\n    error?: {\n        code: string;\n        message: string;\n    };\n}',
   },
   {
     name: 'FederationRegisteredMessage',
@@ -3350,6 +3421,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationSessionSearchResultMessage {\n    type: \'session/search-result\';\n    requestId: string;\n    sessions: SessionSummary[];\n    error?: string;\n}',
   },
   {
+    name: 'FederationSessionSendErrorCode',
+    declaration: 'export type FederationSessionSendErrorCode = \'writer-offline\' | \'unauthorized\' | \'invalid\';',
+  },
+  {
+    name: 'FederationSessionSendMessage',
+    declaration: 'export interface FederationSessionSendMessage {\n    type: \'session/send\';\n    requestId: string;\n    sessionId: SessionId;\n    content: ContentBlock[];\n    clientMessageId: string;\n}',
+  },
+  {
+    name: 'FederationSessionSendResultMessage',
+    declaration: 'export interface FederationSessionSendResultMessage {\n    type: \'session/send-result\';\n    requestId: string;\n    messageId?: string;\n    code?: FederationSessionSendErrorCode;\n    error?: string;\n}',
+  },
+  {
     name: 'FederationSessionStreamEventMessage',
     declaration: 'export interface FederationSessionStreamEventMessage {\n    type: \'session/stream-event\';\n    subscriptionId: string;\n    sessionId: SessionId;\n    event: SessionEvent;\n}',
   },
@@ -3367,7 +3450,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage;',
   },
   {
     name: 'FileDiff',
@@ -4268,6 +4351,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionSearchRequest',
     declaration: 'export interface SessionSearchRequest {\n    query: string;\n    sessionFilters?: readonly SessionResultFilter[];\n    eventFilters?: readonly SessionEventMetadataFilter[];\n    limit?: number;\n    cursor?: SessionSearchCursor;\n}',
+  },
+  {
+    name: 'SessionSendResult',
+    declaration: 'export type SessionSendResult = {\n    ok: true;\n    messageId: string;\n} | {\n    ok: false;\n    code: \'disconnected\' | \'timeout\' | \'writer-offline\' | \'unauthorized\' | \'invalid\';\n    message: string;\n};',
   },
   {
     name: 'SessionSource',

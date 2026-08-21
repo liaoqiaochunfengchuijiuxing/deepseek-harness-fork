@@ -12,6 +12,7 @@
 4. **委派任务执行：** 接收来自 hub 的 `subagent/start` 消息，校验工作区权限约束，使用 pod 本地的模型路由与凭据启动任务，通过 `subagent/chunk` 实时回传流式文本分块，并在完成后返回 `subagent/stop` 终态结果。
 5. **任务中断与取消：** 监听 `subagent/abort` 消息，通过 `AbortController` 中断在途任务执行并清理资源。
 6. **`/remote_send`：** 当挂载了 `ctx.commands` 时，注册一条人类命令，把 `<sessionId> <message>` 经 `session/send` 送到写者节点 inbox。断线、未授权、写者离线与非法发送返回错误结果，不会把文本当作本地模型 prompt 提交。
+7. **审批与问询应答：** 处理 hub 转发的 `approval/request` 与 `question/request`。程序化的 `approvalAnswerer` / `questionAnswerer`，或 `federation/approval-request` / `federation/question-request` waterfall 监听器，在本 pod 上作答。没有应答者时 fail-closed（`unavailable` / 错误结果）。`approval/cancel` 与 `question/cancel` 中止本地等待。
 
 ## 配置项
 
@@ -73,7 +74,20 @@ Pod 消耗自身的上下文窗口和 token 额度，使用本地凭据和模型
 
 与指挥 pod 的请求缓存无关。写者节点的下一次请求随新的用户消息追加增长。
 
+### 审批与问询作答
+
+#### 模型所见
+
+本 pod 上的模型看不到 hub 转发的审批或问询提示。写者节点会话仍记录常规的审批审计事件对。
+
+#### Token 影响
+
+本 pod 上为零。写者节点支付该决定之后产生的任何 follow-up。
+
+#### KV Cache 影响
+
+对本 pod 中立。
+
 ## 已知限制与延后工作
 
-- 经 pod 连接的审批与问询路由递延至 T3.2。
 - 会话落盘缓存与向 hub 的检查点上传递延至 M4。

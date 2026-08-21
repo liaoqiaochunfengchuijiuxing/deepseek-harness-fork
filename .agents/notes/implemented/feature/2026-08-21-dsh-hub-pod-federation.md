@@ -58,7 +58,7 @@ Rendering degrades, never refuses: unknown conversation node kinds fall back to 
 
 ## Approval and question routing
 
-When a pod commands a hub session and the hub's agent hits the fail-closed approval waterfall or `ctx.userQuestions`, the request routes back over the commanding pod's connection and renders in that pod's UI. Delegated runs on an unattended pod run under that pod's permission preset (sandboxed workspace-write); with no answerer available the call fails closed, as today.
+A successful `session/send` records that pod as the session's commander. When the hub agent then hits the fail-closed `approval/request` waterfall or `ctx.userQuestions.ask`, the hub forwards over that command-capable connection and claims the outcome; a missing, offline, or silent commander fails closed and does not fall through to the hub's local UI. The pod answers through a programmatic answerer or the `federation/approval-request` / `federation/question-request` waterfalls. Delegated runs on an unattended pod run under that pod's permission preset (sandboxed workspace-write); with no answerer available the call fails closed, as today.
 
 ## Security model
 
@@ -87,11 +87,11 @@ Workspace files are not carried by session sync. Work spans nodes through a shar
 
 ## Phasing
 
-v0 and v1 are in the tree; v2–v4 remain.
+v0 and v1 are in the tree; command-level send and approval/question routing are in the tree; remaining v2 e2e, v3, and v4 remain.
 
 - v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser.
 - v1: read-level federation session source — native listing, search, live rendering of remote sessions on a pod, with source badges and generic-card fallback for unknown node kinds.
-- v2: command level — `remote_send` is in the tree; approval and question routing back to the commanding pod remain.
+- v2: command level — `/remote_send` and approval/question routing to the commanding pod are in the tree; in-flight disconnect e2e remains.
 - v3: manage and takeover — fork-to-local, lease handoff, bidirectional roaming.
 - v4: peer relay, optional capability-server granularity (remote `ctx.fs`/`ctx.subprocess` providers, E2B-shaped), direct pod-to-pod transport.
 
@@ -119,13 +119,14 @@ v0 and v1 are in the tree:
 - Hub-owned sessions are reachable over the authenticated pod connection and the hub's own web profile. Unauthenticated upgrades are refused.
 - On a pod, remote sessions appear in `ctx.sessionSources` listings with source identity; disconnect marks them degraded and reconnect resumes subscriptions from the last seq. Opening a remote session uses local renderers; unknown conversation node kinds keep the existing generic card.
 
-`/remote_send` is in the tree: a command-capable pod delivers `session/send` into a live writer-node inbox, in order, with `clientMessageId` idempotency; a missing live agent fails as `writer-offline`. Approval routing, fork-to-local, writer leases, and peer relay remain out of tree.
+A command-capable pod delivers `session/send` into a live writer-node inbox, in order, with `clientMessageId` idempotency; a missing live agent fails as `writer-offline`. A successful send records that pod as commander: hub `approval/request` and `ctx.userQuestions.ask` for that session forward over that connection and fail closed without an answerer. Fork-to-local, writer leases, and peer relay remain out of tree.
 
 ## Testing
 
 - M1: `packages/federation/federation-hub/tests/federation-e2e.spec.ts` boots a hub and pods over real WebSockets; `packages/subagent/subagent-remote/tests/subagent-remote.spec.ts` maps stop reasons against a mock endpoint.
 - M2: `packages/federation/session-source-federation/tests/federation-e2e-m2.spec.ts` lists, inspects, searches, streams, degrades, and resumes a hub session from a pod. Local-source equivalence is in `packages/session/session-source-local/tests/session-source-local.spec.ts`. Source badges and unknown-node generic cards are in the client UI unit tests (`packages/client/ui-workspace/tests/rows.client.spec.tsx`, `packages/client/ui-conversation/tests/chat-branch-tails.client.spec.tsx`).
 - T3.1: `packages/federation/federation-hub/tests/federation-hub.spec.ts` delivers ordered, idempotent `session/send` into a live agent inbox and fails `read` tokens and missing writers. `packages/federation/federation-client/tests/remote-send.spec.ts` runs `/remote_send` over a real WebSocket.
+- T3.2: the same hub spec forwards approval and question payloads to the commander, claims outcomes, and fails closed when the commander is missing or silent; the client spec answers over a real WebSocket through programmatic answerers and the pod waterfalls. Assembled disconnect e2e remains T3.3.
 
 ## Risks
 

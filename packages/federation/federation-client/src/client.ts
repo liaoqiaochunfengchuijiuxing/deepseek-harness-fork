@@ -11,9 +11,15 @@ import { WebSocket } from 'ws'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
+import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {
   DelegatedTaskExecutor,
+  FederationApprovalCancelPayload,
+  FederationApprovalRequestPayload,
   FederationClientWireMessage,
+  FederationQuestionCancelPayload,
+  FederationQuestionRequestPayload,
   PodClientCapabilities,
   PodConnectionStatus,
   RemoteSubagentAbortPayload,
@@ -22,6 +28,32 @@ import type {
   RemoteSubagentStopPayload,
   SessionSendResult,
 } from './types.ts'
+import { isApprovalOutcome } from './types.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Answer a hub-forwarded approval for a session this pod commands.
+     * Return an outcome to claim or call `next()`; no claim fails closed to `'unavailable'`.
+     * @param req - the forwarded approval.
+     * @mode waterfall
+     */
+    'federation/approval-request'(
+      req: FederationApprovalRequestPayload,
+      next: () => Promise<ApprovalOutcome>,
+    ): Promise<ApprovalOutcome>
+    /**
+     * Answer a hub-forwarded user question for a session this pod commands.
+     * Return an answer to claim or call `next()`; no claim fails closed.
+     * @param req - the forwarded question.
+     * @mode waterfall
+     */
+    'federation/question-request'(
+      req: FederationQuestionRequestPayload,
+      next: () => Promise<AskUserQuestionAnswer>,
+    ): Promise<AskUserQuestionAnswer>
+  }
+}
 
 /** Configuration options for the federation pod client. */
 export interface FederationClientConfig {
@@ -53,6 +85,22 @@ export interface FederationClientConfig {
   requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
+  /**
+   * Optional programmatic approval answerer. When omitted, the client dispatches
+   * `federation/approval-request`; no listener fails closed to `'unavailable'`.
+   */
+  approvalAnswerer?: (
+    req: FederationApprovalRequestPayload,
+    signal: AbortSignal,
+  ) => Promise<ApprovalOutcome>
+  /**
+   * Optional programmatic question answerer. When omitted, the client dispatches
+   * `federation/question-request`; no listener fails closed.
+   */
+  questionAnswerer?: (
+    req: FederationQuestionRequestPayload,
+    signal: AbortSignal,
+  ) => Promise<AskUserQuestionAnswer>
 }
 
 interface ActiveTask {
@@ -104,6 +152,8 @@ export class FederationPodClient {
   private currentReconnectDelay: number
   private readonly inFlightTasks = new Map<string, ActiveTask>()
   private readonly pendingSends = new Map<string, PendingSend>()
+  private readonly pendingApprovals = new Map<string, AbortController>()
+  private readonly pendingQuestions = new Map<string, AbortController>()
 
   constructor(
     private readonly ctx: Context,
@@ -163,6 +213,7 @@ export class FederationPodClient {
     }
     this.inFlightTasks.clear()
     this.rejectPendingSends('federation client disposed')
+    this.abortPendingInteractions()
 
     if (this.socket) {
       try {
@@ -294,6 +345,7 @@ export class FederationPodClient {
       this.heartbeatTimer = undefined
     }
     this.rejectPendingSends('federation client is not connected')
+    this.abortPendingInteractions()
     this.scheduleReconnect()
   }
 
@@ -383,8 +435,108 @@ export class FederationPodClient {
         })
         break
       }
+      case 'approval/request': {
+        await this.handleApprovalRequest(msg)
+        break
+      }
+      case 'approval/cancel': {
+        this.cancelPending(this.pendingApprovals, msg)
+        break
+      }
+      case 'question/request': {
+        await this.handleQuestionRequest(msg)
+        break
+      }
+      case 'question/cancel': {
+        this.cancelPending(this.pendingQuestions, msg)
+        break
+      }
       default:
         break
+    }
+  }
+
+  private cancelPending(
+    pending: Map<string, AbortController>,
+    msg: FederationApprovalCancelPayload | FederationQuestionCancelPayload,
+  ): void {
+    const controller = pending.get(msg.requestId)
+    if (controller === undefined) return
+    controller.abort('cancelled by hub')
+    pending.delete(msg.requestId)
+  }
+
+  private abortPendingInteractions(): void {
+    for (const controller of this.pendingApprovals.values()) controller.abort('federation client disposed')
+    this.pendingApprovals.clear()
+    for (const controller of this.pendingQuestions.values()) controller.abort('federation client disposed')
+    this.pendingQuestions.clear()
+  }
+
+  private async handleApprovalRequest(msg: FederationApprovalRequestPayload): Promise<void> {
+    const controller = new AbortController()
+    this.pendingApprovals.set(msg.requestId, controller)
+    let outcome: ApprovalOutcome = 'unavailable'
+    try {
+      const raw = this.config.approvalAnswerer
+        ? await this.config.approvalAnswerer(msg, controller.signal)
+        : await this.ctx.waterfall(
+          'federation/approval-request',
+          msg,
+          () => Promise.resolve<ApprovalOutcome>('unavailable'),
+        )
+      if (controller.signal.aborted) {
+        outcome = 'cancelled'
+      } else {
+        outcome = isApprovalOutcome(raw) ? raw : 'unavailable'
+      }
+    } catch {
+      outcome = controller.signal.aborted ? 'cancelled' : 'unavailable'
+    } finally {
+      this.pendingApprovals.delete(msg.requestId)
+    }
+    if (!this.disposed) {
+      this.sendMessage({ type: 'approval/result', requestId: msg.requestId, outcome })
+    }
+  }
+
+  private async handleQuestionRequest(msg: FederationQuestionRequestPayload): Promise<void> {
+    const controller = new AbortController()
+    this.pendingQuestions.set(msg.requestId, controller)
+    try {
+      const answer = this.config.questionAnswerer
+        ? await this.config.questionAnswerer(msg, controller.signal)
+        : await this.ctx.waterfall(
+          'federation/question-request',
+          msg,
+          () => Promise.reject(new Error('no local question answerer')),
+        )
+      if (this.disposed || controller.signal.aborted) return
+      if (!Array.isArray(answer.answers) || answer.answers.length === 0) {
+        this.sendMessage({
+          type: 'question/result',
+          requestId: msg.requestId,
+          error: { code: 'UNAVAILABLE', message: 'local answerer returned no answers' },
+        })
+        return
+      }
+      this.sendMessage({
+        type: 'question/result',
+        requestId: msg.requestId,
+        answers: answer.answers,
+      })
+    } catch (err: unknown) {
+      if (this.disposed) return
+      this.sendMessage({
+        type: 'question/result',
+        requestId: msg.requestId,
+        error: {
+          code: controller.signal.aborted ? 'ASK_ABORTED' : 'UNAVAILABLE',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      })
+    } finally {
+      this.pendingQuestions.delete(msg.requestId)
     }
   }
 

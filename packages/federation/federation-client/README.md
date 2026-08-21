@@ -12,6 +12,7 @@ Data-plane client plugin for multi-node DeepSeek Harness federation. Connects ed
 4. **Delegated Task Execution:** Receives `subagent/start` messages from the hub, checks workspace constraints, executes tasks locally using the pod's own credentials and model routing, streams deltas via `subagent/chunk`, and returns final results via `subagent/stop`.
 5. **Cancellation & Abort:** Listens for `subagent/abort` messages to cancel in-flight tasks via `AbortController` and clean up running processes.
 6. **`/remote_send`:** When `ctx.commands` is mounted, registers a human command that delivers `<sessionId> <message>` to the writer-node inbox over `session/send`. Disconnected, unauthorized, writer-offline, and invalid sends return an error result and do not submit the text as a local model prompt.
+7. **Approval and question answerers:** Handles hub-forwarded `approval/request` and `question/request`. A programmatic `approvalAnswerer` / `questionAnswerer`, or a `federation/approval-request` / `federation/question-request` waterfall listener, answers on this pod. No answerer fails closed (`unavailable` / error result). `approval/cancel` and `question/cancel` abort the local wait.
 
 ## Configuration
 
@@ -73,7 +74,20 @@ Zero on the commanding pod. The writer node pays for the follow-up turn.
 
 Independent of the commanding pod request cache. The writer node's next request grows append-only with the new user message.
 
+### Approval and question answering
+
+#### What the model sees
+
+This pod's model does not see hub-forwarded approval or question prompts. The writer-node session logs the usual approval audit pair.
+
+#### Token effect
+
+Zero on this pod. The writer node pays for any follow-up the decision produces.
+
+#### KV Cache effect
+
+Neutral on this pod.
+
 ## Known Limitations and Deferred Work
 
-- Approval and question routing over the pod connection is deferred to T3.2.
 - Persistent session caching and checkpoint upload to hub is deferred to M4.

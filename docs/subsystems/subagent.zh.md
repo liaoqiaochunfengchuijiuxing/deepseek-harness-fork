@@ -508,9 +508,20 @@ getPodId(): string
  * @returns Number of running tasks.
  */
 getActiveTaskCount(): number
+
+/**
+ * Deliver user content to a writer-node session inbox.
+ * @param sessionId - target session on the writer node.
+ * @param content - user-role content blocks.
+ * @param clientMessageId - idempotency key scoped to `sessionId`.
+ * @returns accepted message id, or a structured failure.
+ */
+sendToSession( sessionId: SessionId, content: ContentBlock[], clientMessageId: string, ): Promise<SessionSendResult>
 ```
 
-Source: [`packages/federation/federation-client/src/service.ts:21`](../../packages/federation/federation-client/src/service.ts)
+Types: [ContentBlock](llm-streaming.md) · [SessionId](core.md)
+
+Source: [`packages/federation/federation-client/src/service.ts:23`](../../packages/federation/federation-client/src/service.ts)
 
 <a id="ctxfederationhub--federationhubservice"></a>
 
@@ -519,6 +530,13 @@ Source: [`packages/federation/federation-client/src/service.ts:21`](../../packag
 Service managing connected pods and message routing across the federation hub.
 
 ```ts cordis-catalog
+/**
+ * Bind `approval/request` and `ctx.userQuestions.ask` so commanded sessions
+ * route to the commanding pod. Call after those services are composed, or
+ * from plugin apply so `inject` waits for them.
+ */
+bindInteractionBridges(): void
+
 /**
  * List all currently registered pods.
  * @returns Array of pod information records.
@@ -584,9 +602,30 @@ cancelPodDelegation(podId: string, runId: string, reason?: string): void
  * @param message - parsed wire message.
  */
 handlePodMessage(podId: string, message: FederationWireMessage): void
+
+/**
+ * Forward an approval to the commanding pod, or `next()` when this hub does
+ * not own the decision. A recorded commander that cannot answer fails closed
+ * to `'unavailable'` and does not fall through to other answerers.
+ * @param req - pending decision from `approval/request`.
+ * @param next - remaining waterfall.
+ * @returns claimed outcome, or the rest of the chain.
+ */
+handleApprovalRequest( req: ApprovalRequest, next: () => Promise<ApprovalOutcome>, ): Promise<ApprovalOutcome>
+
+/**
+ * Forward a user question to the commanding pod. Without a commander, call
+ * `fallback` (the registered local provider) when provided.
+ * @param request - questions plus optional calling agent.
+ * @param fallback - local `ctx.userQuestions.ask` when this hub does not own the ask.
+ * @returns the human's answer.
+ */
+routeQuestion( request: AskUserQuestionRequest, fallback?: () => Promise<AskUserQuestionAnswer>, ): Promise<AskUserQuestionAnswer>
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:66`](../../packages/federation/federation-hub/src/service.ts)
+Types: [ApprovalOutcome](approval.md) · [ApprovalRequest](approval.md) · [AskUserQuestionAnswer](user-questions.md) · [AskUserQuestionRequest](user-questions.md)
+
+Source: [`packages/federation/federation-hub/src/service.ts:108`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 
@@ -777,6 +816,26 @@ Source: [`packages/subagent/subagent/src/index.ts:171`](../../packages/subagent/
 
 ### `federation/*` events
 
+<a id="federationapproval-request--waterfall"></a>
+
+#### `federation/approval-request` — waterfall
+
+Answer a hub-forwarded approval for a session this pod commands. Return an outcome to claim or call `next()`; no claim fails closed to `'unavailable'`.
+
+```ts cordis-catalog
+/**
+ * Answer a hub-forwarded approval for a session this pod commands.
+ * Return an outcome to claim or call `next()`; no claim fails closed to `'unavailable'`.
+ * @param req - the forwarded approval.
+ * @mode waterfall
+ */
+'federation/approval-request'( req: FederationApprovalRequestPayload, next: () => Promise<ApprovalOutcome>, ): Promise<ApprovalOutcome>
+```
+
+Types: [ApprovalOutcome](approval.md)
+
+Source: [`packages/federation/federation-client/src/client.ts:41`](../../packages/federation/federation-client/src/client.ts)
+
 <a id="federationpod-offline--emit"></a>
 
 #### `federation/pod-offline` — emit
@@ -792,7 +851,7 @@ Emitted when a registered pod is marked offline due to heartbeat timeout or sock
 'federation/pod-offline': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:38`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:57`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-registered--emit"></a>
 
@@ -809,7 +868,7 @@ Emitted when a pod completes handshake and registers with the hub.
 'federation/pod-registered': (pod: PodInfo) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:32`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:51`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-unregistered--emit"></a>
 
@@ -826,7 +885,27 @@ Emitted when a pod is explicitly removed from the registry.
 'federation/pod-unregistered': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:44`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:63`](../../packages/federation/federation-hub/src/service.ts)
+
+<a id="federationquestion-request--waterfall"></a>
+
+#### `federation/question-request` — waterfall
+
+Answer a hub-forwarded user question for a session this pod commands. Return an answer to claim or call `next()`; no claim fails closed.
+
+```ts cordis-catalog
+/**
+ * Answer a hub-forwarded user question for a session this pod commands.
+ * Return an answer to claim or call `next()`; no claim fails closed.
+ * @param req - the forwarded question.
+ * @mode waterfall
+ */
+'federation/question-request'( req: FederationQuestionRequestPayload, next: () => Promise<AskUserQuestionAnswer>, ): Promise<AskUserQuestionAnswer>
+```
+
+Types: [AskUserQuestionAnswer](user-questions.md)
+
+Source: [`packages/federation/federation-client/src/client.ts:51`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="subagent-events"></a>
 

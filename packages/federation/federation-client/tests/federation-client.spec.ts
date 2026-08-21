@@ -5,8 +5,10 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { Context } from '@deepseek-ai/cordis'
 import {
   FederationPodClient,
+  isApprovalOutcome,
   isCwdPermitted,
   rawDataToString,
+  type FederationClientConfig,
   type FederationClientWireMessage,
   type RemoteSubagentStartPayload,
   type RemoteSubagentStopPayload,
@@ -39,6 +41,11 @@ describe('dsh-federation-client', () => {
       expect(rawDataToString(Buffer.from('test'))).toBe('test')
       expect(rawDataToString([Buffer.from('te'), Buffer.from('st')])).toBe('test')
       expect(rawDataToString(new Uint8Array(Buffer.from('test')) as unknown as WebSocket.RawData)).toBe('test')
+    })
+
+    it('isApprovalOutcome accepts the closed vocabulary', () => {
+      expect(isApprovalOutcome('allowed-once')).toBe(true)
+      expect(isApprovalOutcome('nope')).toBe(false)
     })
   })
 
@@ -327,6 +334,383 @@ describe('dsh-federation-client', () => {
       expect(ctx.federationClient).toBeDefined()
       expect(ctx.federationClient.getPodId()).toBe('pod-service-test')
       expect(ctx.federationClient.getActiveTaskCount()).toBe(0)
+    })
+
+    async function connectedClient(
+      extra: Pick<FederationClientConfig, 'approvalAnswerer' | 'questionAnswerer'> = {},
+    ): Promise<FederationPodClient> {
+      const client = new FederationPodClient(ctx, {
+        endpoint: `ws://127.0.0.1:${serverPort}`,
+        podId: 'pod-interact',
+        name: 'Interact Pod',
+        ...extra,
+      })
+      client.start()
+      await vi.waitFor(() => {
+        expect(client.getStatus()).toBe('connected')
+        expect(clientSocket).toBeDefined()
+      })
+      return client
+    }
+
+    it('answers approval/request through the configured answerer', async () => {
+      const client = await connectedClient({
+        approvalAnswerer: async (req) => {
+          expect(req.toolName).toBe('bash')
+          return 'allowed-once'
+        },
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-1',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+        callId: 'c1',
+        reason: 'needs grant',
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-1'
+          && m.type === 'approval/result' && 'outcome' in m && m.outcome === 'allowed-once')).toBe(true)
+      })
+      client.dispose()
+    })
+
+    it('fails closed to unavailable without an approval answerer and normalizes rogue outcomes', async () => {
+      const client = await connectedClient({
+        approvalAnswerer: async () => 'yolo' as never,
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-rogue',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-rogue'
+          && 'outcome' in m && m.outcome === 'unavailable')).toBe(true)
+      })
+      client.dispose()
+
+      const fallback = await connectedClient()
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-none',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-none'
+          && 'outcome' in m && m.outcome === 'unavailable')).toBe(true)
+      })
+      fallback.dispose()
+    })
+
+    it('maps a throwing approval answerer to unavailable and a cancel to cancelled', async () => {
+      let signal: AbortSignal | undefined
+      const client = await connectedClient({
+        approvalAnswerer: (_req, s) => new Promise<never>((_resolve, reject) => {
+          signal = s
+          s.addEventListener('abort', () => { reject(new Error('aborted')) })
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-throw',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(signal).toBeDefined()
+      })
+      clientSocket!.send(JSON.stringify({ type: 'approval/cancel', requestId: 'ap-throw' }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-throw'
+          && 'outcome' in m && m.outcome === 'cancelled')).toBe(true)
+      })
+      client.dispose()
+
+      const throwing = await connectedClient({
+        approvalAnswerer: () => Promise.reject(new Error('boom')),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-boom',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-boom'
+          && 'outcome' in m && m.outcome === 'unavailable')).toBe(true)
+      })
+      throwing.dispose()
+    })
+
+    it('answers question/request through the configured answerer', async () => {
+      const client = await connectedClient({
+        questionAnswerer: async (req) => {
+          expect(req.questions).toEqual([{ id: 'q1', question: 'Continue?' }])
+          return { answers: [{ id: 'q1', selected: ['yes'] }] }
+        },
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-1',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q1', question: 'Continue?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-1'
+          && 'answers' in m && Array.isArray(m.answers))).toBe(true)
+      })
+      client.dispose()
+    })
+
+    it('fails closed on missing question answerer, empty answers, and thrown errors', async () => {
+      const none = await connectedClient()
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-none',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-none'
+          && 'error' in m && m.error?.code === 'UNAVAILABLE')).toBe(true)
+      })
+      none.dispose()
+
+      const empty = await connectedClient({
+        questionAnswerer: async () => ({ answers: [] }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-empty',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-empty'
+          && 'error' in m)).toBe(true)
+      })
+      empty.dispose()
+
+      const boom = await connectedClient({
+        questionAnswerer: () => Promise.reject(new Error('no ui')),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-boom',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-boom'
+          && 'error' in m && m.error?.message === 'no ui')).toBe(true)
+      })
+      boom.dispose()
+    })
+
+    it('cancels an in-flight question and ignores cancel for unknown ids', async () => {
+      let signal: AbortSignal | undefined
+      const client = await connectedClient({
+        questionAnswerer: (_req, s) => new Promise((_resolve, reject) => {
+          signal = s
+          s.addEventListener('abort', () => { reject(new Error('aborted')) })
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-cancel',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(signal).toBeDefined()
+      })
+      clientSocket!.send(JSON.stringify({ type: 'question/cancel', requestId: 'unknown' }))
+      clientSocket!.send(JSON.stringify({ type: 'approval/cancel', requestId: 'unknown-ap' }))
+      clientSocket!.send(JSON.stringify({ type: 'question/cancel', requestId: 'q-cancel' }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-cancel'
+          && 'error' in m && m.error?.code === 'ASK_ABORTED')).toBe(true)
+      })
+      client.dispose()
+    })
+
+    it('does not reply after dispose, and aborting on close drops in-flight interactions', async () => {
+      let released: ((value: 'allowed-once') => void) | undefined
+      const client = await connectedClient({
+        approvalAnswerer: () => new Promise((resolve) => {
+          released = resolve
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-dispose',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(released).toBeDefined()
+      })
+      client.dispose()
+      released?.('allowed-once')
+      await new Promise(r => setTimeout(r, 20))
+      expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-dispose')).toBe(false)
+    })
+
+    it('claims federation/approval-request and federation/question-request waterfalls', async () => {
+      ctx.on('federation/approval-request', (req) => {
+        expect(req.requestId).toBe('ap-wf')
+        return Promise.resolve('rejected' as const)
+      })
+      ctx.on('federation/question-request', (req) => {
+        expect(req.requestId).toBe('q-wf')
+        return Promise.resolve({ answers: [{ id: 'q', selected: ['wf'] }] })
+      })
+      const client = await connectedClient()
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-wf',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-wf',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-wf'
+          && 'outcome' in m && m.outcome === 'rejected')).toBe(true)
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-wf'
+          && 'answers' in m)).toBe(true)
+      })
+      client.dispose()
+    })
+
+    it('ignores unknown wire types and drops a late question answer after cancel or dispose', async () => {
+      const client = await connectedClient({
+        questionAnswerer: (_req, signal) => new Promise((resolve) => {
+          signal.addEventListener('abort', () => {
+            resolve({ answers: [{ id: 'q', selected: ['late'] }] })
+          })
+        }),
+      })
+      clientSocket!.send(JSON.stringify({ type: 'pong' }))
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-late',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'federation/register')).toBe(true)
+      })
+      clientSocket!.send(JSON.stringify({ type: 'question/cancel', requestId: 'q-late' }))
+      await new Promise(r => setTimeout(r, 30))
+      expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-late')).toBe(false)
+      client.dispose()
+
+      let resolveQ: ((value: { answers: Array<{ id: string; selected: string[] }> }) => void) | undefined
+      const late = await connectedClient({
+        questionAnswerer: () => new Promise((resolve) => {
+          resolveQ = resolve
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-disp-ok',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(resolveQ).toBeDefined()
+      })
+      late.dispose()
+      resolveQ?.({ answers: [{ id: 'q', selected: ['too-late'] }] })
+      await new Promise(r => setTimeout(r, 20))
+      expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-disp-ok')).toBe(false)
+    })
+
+    it('does not send a question error after dispose, and cancels a returning approval', async () => {
+      let releaseQ: ((err: Error) => void) | undefined
+      const qClient = await connectedClient({
+        questionAnswerer: () => new Promise((_resolve, reject) => {
+          releaseQ = reject
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-disp',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(releaseQ).toBeDefined()
+      })
+      qClient.dispose()
+      releaseQ?.(new Error('late'))
+      await new Promise(r => setTimeout(r, 20))
+      expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-disp')).toBe(false)
+
+      let signal: AbortSignal | undefined
+      const apClient = await connectedClient({
+        approvalAnswerer: (_req, s) => new Promise((resolve) => {
+          signal = s
+          s.addEventListener('abort', () => { resolve('allowed-once') })
+        }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'approval/request',
+        requestId: 'ap-late',
+        sessionId: 'sess-live',
+        toolName: 'bash',
+      }))
+      await vi.waitFor(() => {
+        expect(signal).toBeDefined()
+      })
+      clientSocket!.send(JSON.stringify({ type: 'approval/cancel', requestId: 'ap-late' }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'approval/result' && m.requestId === 'ap-late'
+          && 'outcome' in m && m.outcome === 'cancelled')).toBe(true)
+      })
+      apClient.dispose()
+    })
+
+    it('maps a non-Error question answerer throw and a non-array answers field', async () => {
+      const client = await connectedClient({
+        questionAnswerer: async () => {
+          throw 42
+        },
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-42',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-42'
+          && 'error' in m && m.error?.message === '42')).toBe(true)
+      })
+      client.dispose()
+
+      const bad = await connectedClient({
+        questionAnswerer: async () => ({ answers: undefined as never }),
+      })
+      clientSocket!.send(JSON.stringify({
+        type: 'question/request',
+        requestId: 'q-undef',
+        sessionId: 'sess-live',
+        questions: [{ id: 'q', question: '?' }],
+      }))
+      await vi.waitFor(() => {
+        expect(serverMessages.some(m => m.type === 'question/result' && m.requestId === 'q-undef'
+          && 'error' in m)).toBe(true)
+      })
+      bad.dispose()
     })
   })
 })

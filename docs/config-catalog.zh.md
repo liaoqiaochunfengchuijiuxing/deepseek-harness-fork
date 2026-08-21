@@ -665,8 +665,26 @@ export interface FederationClientConfig {
   sandboxModes?: string[]
   /** Declared role for this pod. */
   role?: 'read' | 'command' | 'manage' | 'takeover'
+  /** Bound (ms) on a `session/send` round-trip. */
+  requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
+  /**
+   * Optional programmatic approval answerer. When omitted, the client dispatches
+   * `federation/approval-request`; no listener fails closed to `'unavailable'`.
+   */
+  approvalAnswerer?: (
+    req: FederationApprovalRequestPayload,
+    signal: AbortSignal,
+  ) => Promise<ApprovalOutcome>
+  /**
+   * Optional programmatic question answerer. When omitted, the client dispatches
+   * `federation/question-request`; no listener fails closed.
+   */
+  questionAnswerer?: (
+    req: FederationQuestionRequestPayload,
+    signal: AbortSignal,
+  ) => Promise<AskUserQuestionAnswer>
 }
 
 /** Custom execution handler signature for executing delegated tasks. */
@@ -675,6 +693,34 @@ export type DelegatedTaskExecutor = (
   onChunk: (delta: string) => void,
   signal: AbortSignal,
 ) => Promise<RemoteSubagentStopPayload>
+
+/** Hub-forwarded approval for a session this pod commands. */
+export interface FederationApprovalRequestPayload {
+  /** Discriminant message type tag. */
+  type: 'approval/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the approval belongs to. */
+  sessionId: SessionId
+  /** Tool the question is about. */
+  toolName: string
+  /** Exact tool call id when the asker had one. */
+  callId?: string
+  /** Asker's human-readable explanation. */
+  reason?: string
+}
+
+/** Hub-forwarded user question for a session this pod commands. */
+export interface FederationQuestionRequestPayload {
+  /** Discriminant message type tag. */
+  type: 'question/request'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Writer-node session the question belongs to. */
+  sessionId: SessionId
+  /** Questions to display. */
+  questions: AskUserQuestionItem[]
+}
 
 /** Task delegation start message received from hub. */
 export interface RemoteSubagentStartPayload {
@@ -717,9 +763,9 @@ export interface TokenUsageSummary {
 }
 ```
 
-依赖项：[`ContentBlock`](subsystems/llm-streaming.md) · [`SubagentStopReason`](../packages/subagent/subagent/src/index.ts)
+依赖项：[`ApprovalOutcome`](subsystems/approval.md) · [`AskUserQuestionAnswer`](subsystems/user-questions.md) · `AskUserQuestionItem` (`@deepseek-ai/dsh-user-questions/types`) · [`ContentBlock`](subsystems/llm-streaming.md) · [`SessionId`](subsystems/core.md) · [`SubagentStopReason`](../packages/subagent/subagent/src/index.ts)
 
-来源：[`packages/federation/federation-client/src/index.ts:22`](../packages/federation/federation-client/src/index.ts)
+来源：[`packages/federation/federation-client/src/index.ts:25`](../packages/federation/federation-client/src/index.ts)
 
 <a id="deepseek-aidsh-federation-hub"></a>
 
@@ -729,7 +775,10 @@ export interface TokenUsageSummary {
 
 ```ts config-catalog
 /** Config schema for federation hub. */
-export interface Config extends FederationHubConfig {}
+export interface Config extends FederationHubConfig {
+  /** Bound (ms) on an approval or question round-trip to the commanding pod. */
+  interactionTimeoutMs?: number
+}
 
 /** Configuration for FederationHubServer. */
 export interface FederationHubConfig {

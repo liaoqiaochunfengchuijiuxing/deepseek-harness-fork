@@ -43,6 +43,12 @@
     },
     {
       "path": "../session-source-federation"
+    },
+    {
+      "path": "../../interaction/user-approval"
+    },
+    {
+      "path": "../../interaction/user-questions"
     }
   ]
 }
