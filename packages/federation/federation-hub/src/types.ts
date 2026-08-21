@@ -4,7 +4,7 @@
  */
 
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionInspectionResult, SessionSummary } from '@deepseek-ai/dsh-session-source'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
@@ -412,6 +412,68 @@ export interface FederationQuestionCancelMessage {
   requestId: string
 }
 
+/** Upload a locally-spooled event batch to hub session persistence. */
+export interface FederationSessionPersistMessage {
+  /** Discriminant message tag. */
+  type: 'session/persist'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Session whose log is being uploaded. */
+  sessionId: SessionId
+  /** Header required when the hub has not materialized this session. */
+  header?: SessionHeader
+  /** Contiguous events to append; already-stored seqs are skipped. */
+  events: SessionEvent[]
+}
+
+/** Result of a {@link FederationSessionPersistMessage}. */
+export interface FederationSessionPersistResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/persist-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Highest stored seq after applying this batch. */
+  lastSeq?: number
+  /** Failure code when the upload did not apply. */
+  code?: 'unauthorized' | 'invalid' | 'stale-writer' | 'unavailable'
+  /** Failure message when the upload did not apply. */
+  error?: string
+}
+
+/** Acquire the single-writer lease for a session. */
+export interface FederationSessionLeaseAcquireMessage {
+  /** Discriminant message tag. */
+  type: 'session/lease-acquire'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Session to write. */
+  sessionId: SessionId
+}
+
+/** Release the single-writer lease for a session. */
+export interface FederationSessionLeaseReleaseMessage {
+  /** Discriminant message tag. */
+  type: 'session/lease-release'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Session to release. */
+  sessionId: SessionId
+}
+
+/** Result of a lease acquire or release. */
+export interface FederationSessionLeaseResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/lease-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Holder pod id when acquire succeeded. */
+  holder?: string
+  /** Failure code. */
+  code?: 'unauthorized' | 'stale-writer' | 'invalid'
+  /** Failure message. */
+  error?: string
+}
+
 /** Union of all messages sent over the federation WebSocket connection. */
 export type FederationWireMessage =
   | FederationRegisterMessage
@@ -442,3 +504,8 @@ export type FederationWireMessage =
   | FederationQuestionRequestMessage
   | FederationQuestionResultMessage
   | FederationQuestionCancelMessage
+  | FederationSessionPersistMessage
+  | FederationSessionPersistResultMessage
+  | FederationSessionLeaseAcquireMessage
+  | FederationSessionLeaseReleaseMessage
+  | FederationSessionLeaseResultMessage

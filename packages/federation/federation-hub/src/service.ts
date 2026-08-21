@@ -10,7 +10,8 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type WebSocket from 'ws'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import {
@@ -25,6 +26,9 @@ import {
   roleAllowsCommand,
   type FederationApprovalResultMessage,
   type FederationQuestionResultMessage,
+  type FederationSessionLeaseAcquireMessage,
+  type FederationSessionLeaseReleaseMessage,
+  type FederationSessionPersistMessage,
   type FederationSessionSendErrorCode,
   type FederationSessionSendMessage,
   type FederationTokenRole,
@@ -112,6 +116,7 @@ export class FederationHubService extends Service {
   private readonly sendTails = new Map<string, Promise<void>>()
   private readonly acceptedSends = new Map<string, string>()
   private readonly commanders = new Map<string, string>()
+  private readonly leases = new Map<string, string>()
   private readonly pendingApprovals = new Map<string, PendingApproval>()
   private readonly pendingQuestions = new Map<string, PendingQuestion>()
   private readonly interactionTimeoutMs: number
@@ -244,7 +249,10 @@ export class FederationHubService extends Service {
    * @param status - new status.
    */
   setPodStatus(podId: string, status: PodStatus): void {
-    if (status === 'offline') this.failPendingForPod(podId)
+    if (status === 'offline') {
+      this.failPendingForPod(podId)
+      this.releaseLeasesForPod(podId)
+    }
     const record = this.pods.get(podId)
     if (record && record.info.status !== status) {
       record.info.status = status
@@ -533,6 +541,18 @@ export class FederationHubService extends Service {
       }
       case 'session/send': {
         void this.handleSessionSend(podId, message)
+        break
+      }
+      case 'session/persist': {
+        void this.handleSessionPersist(podId, message)
+        break
+      }
+      case 'session/lease-acquire': {
+        this.handleLeaseAcquire(podId, message)
+        break
+      }
+      case 'session/lease-release': {
+        this.handleLeaseRelease(podId, message)
         break
       }
       case 'approval/result': {
@@ -874,6 +894,199 @@ export class FederationHubService extends Service {
         'federation hub disposed',
         'COMMANDER_UNAVAILABLE',
       ))
+    }
+  }
+
+  /**
+   * The pod currently holding the writer lease, if any.
+   * @param sessionId - session to inspect.
+   * @returns holder pod id, or undefined.
+   */
+  leaseHolder(sessionId: SessionId): string | undefined {
+    return this.leases.get(String(sessionId))
+  }
+
+  private releaseLeasesForPod(podId: string): void {
+    for (const [sessionId, holder] of this.leases) {
+      if (holder === podId) this.leases.delete(sessionId)
+    }
+  }
+
+  private replyLease(
+    podId: string,
+    requestId: string,
+    result: { holder: string } | { code: 'unauthorized' | 'stale-writer' | 'invalid'; error: string },
+  ): void {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return
+    if ('holder' in result) {
+      record.socket.send(JSON.stringify({
+        type: 'session/lease-result',
+        requestId,
+        holder: result.holder,
+      }))
+      return
+    }
+    record.socket.send(JSON.stringify({
+      type: 'session/lease-result',
+      requestId,
+      code: result.code,
+      error: result.error,
+    }))
+  }
+
+  private handleLeaseAcquire(podId: string, message: FederationSessionLeaseAcquireMessage): void {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replyLease(podId, message.requestId, {
+        code: 'unauthorized',
+        error: 'session lease requires a command-capable token',
+      })
+      return
+    }
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0) {
+      this.replyLease(podId, message.requestId, {
+        code: 'invalid',
+        error: 'lease acquire requires sessionId',
+      })
+      return
+    }
+    const key = String(message.sessionId)
+    const holder = this.leases.get(key)
+    if (holder !== undefined && holder !== podId) {
+      this.replyLease(podId, message.requestId, {
+        code: 'stale-writer',
+        error: `session ${message.sessionId} is leased to ${holder}`,
+      })
+      return
+    }
+    this.leases.set(key, podId)
+    this.replyLease(podId, message.requestId, { holder: podId })
+  }
+
+  private handleLeaseRelease(podId: string, message: FederationSessionLeaseReleaseMessage): void {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replyLease(podId, message.requestId, {
+        code: 'unauthorized',
+        error: 'session lease requires a command-capable token',
+      })
+      return
+    }
+    const key = String(message.sessionId)
+    const holder = this.leases.get(key)
+    if (holder !== undefined && holder !== podId) {
+      this.replyLease(podId, message.requestId, {
+        code: 'stale-writer',
+        error: `session ${message.sessionId} is leased to ${holder}`,
+      })
+      return
+    }
+    this.leases.delete(key)
+    this.replyLease(podId, message.requestId, { holder: podId })
+  }
+
+  private replyPersist(
+    podId: string,
+    requestId: string,
+    result: { lastSeq: number } | { code: 'unauthorized' | 'invalid' | 'stale-writer' | 'unavailable'; error: string },
+  ): void {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return
+    if ('lastSeq' in result) {
+      record.socket.send(JSON.stringify({
+        type: 'session/persist-result',
+        requestId,
+        lastSeq: result.lastSeq,
+      }))
+      return
+    }
+    record.socket.send(JSON.stringify({
+      type: 'session/persist-result',
+      requestId,
+      code: result.code,
+      error: result.error,
+    }))
+  }
+
+  private isSessionEvents(value: unknown): value is SessionEvent[] {
+    return Array.isArray(value)
+      && value.every(event => typeof event === 'object' && event !== null
+        && typeof (event as { type?: unknown }).type === 'string'
+        && typeof (event as { seq?: unknown }).seq === 'number')
+  }
+
+  private async handleSessionPersist(podId: string, message: FederationSessionPersistMessage): Promise<void> {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'unauthorized',
+        error: 'session persist requires a command-capable token',
+      })
+      return
+    }
+    const holder = this.leases.get(String(message.sessionId))
+    if (holder !== undefined && holder !== podId) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'stale-writer',
+        error: `session ${message.sessionId} is leased to ${holder}`,
+      })
+      return
+    }
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0
+      || !this.isSessionEvents(message.events)) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'invalid',
+        error: 'session persist requires sessionId and events',
+      })
+      return
+    }
+    if (message.header !== undefined && String(message.header.id) !== String(message.sessionId)) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'invalid',
+        error: 'session persist header id must match sessionId',
+      })
+      return
+    }
+    const persistence = this.ctx.get('sessionPersistence')
+    if (persistence === undefined) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'unavailable',
+        error: 'hub session persistence is not configured',
+      })
+      return
+    }
+    try {
+      const id = SessionId(message.sessionId)
+      let stored: { events: readonly SessionEvent[] } | undefined
+      try {
+        stored = await persistence.inspect(id)
+      } catch {
+        // inspect rejects when the hub has no materialized session yet
+        stored = undefined
+      }
+      if (stored === undefined && message.header !== undefined) {
+        await persistence.create(message.header)
+      }
+      const nextSeq = stored !== undefined && stored.events.length > 0
+        ? (stored.events[stored.events.length - 1]?.seq ?? -1) + 1
+        : 0
+      const fresh = message.events.filter(event => event.seq >= nextSeq)
+      if (fresh.length > 0) {
+        await persistence.append(id, fresh)
+      }
+      const last = fresh.length > 0
+        ? (fresh.at(-1)?.seq ?? nextSeq - 1)
+        : nextSeq - 1
+      this.replyPersist(podId, message.requestId, { lastSeq: last < 0 ? -1 : last })
+    } catch (err: unknown) {
+      this.replyPersist(podId, message.requestId, {
+        code: 'invalid',
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 }

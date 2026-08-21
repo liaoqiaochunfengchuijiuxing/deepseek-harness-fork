@@ -26,6 +26,8 @@ Durable session persistence, semantic checkpoint policy, and the shipped storage
 | [`session-persistence-jsonl/`](session-persistence-jsonl/README.md) | Persists sessions in JSONL files | registers on `ctx.sessionPersistence` |
 | [`session-persistence-sqlite/`](session-persistence-sqlite/README.md) | Opt-in SQLite backend with packed physical chunk rows | registers on `ctx.sessionPersistence` |
 
+The federation spool-and-upload backend lives with the federation family: [`dsh-session-persistence-federation`](../federation/session-persistence-federation/README.md).
+
 The [session-persistence decision](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md) records the persistence design.
 
 ## Projection

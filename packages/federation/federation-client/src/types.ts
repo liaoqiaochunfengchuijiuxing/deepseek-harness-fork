@@ -6,7 +6,7 @@
  */
 
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionAnswerItem, AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
@@ -244,6 +244,68 @@ export interface FederationQuestionCancelPayload {
   requestId: string
 }
 
+/** Upload a locally-spooled event batch to hub session persistence. */
+export interface FederationSessionPersistPayload {
+  /** Discriminant message type tag. */
+  type: 'session/persist'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Session whose log is being uploaded. */
+  sessionId: SessionId
+  /** Header required when the hub has not materialized this session. */
+  header?: SessionHeader
+  /** Contiguous events to append. */
+  events: SessionEvent[]
+}
+
+/** Result of a {@link FederationSessionPersistPayload}. */
+export interface FederationSessionPersistResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/persist-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Highest stored seq after applying this batch. */
+  lastSeq?: number
+  /** Failure code when the upload did not apply. */
+  code?: 'unauthorized' | 'invalid' | 'stale-writer' | 'unavailable'
+  /** Failure message when the upload did not apply. */
+  error?: string
+}
+
+/** Acquire or release the single-writer lease. */
+export interface FederationSessionLeasePayload {
+  /** Discriminant message type tag. */
+  type: 'session/lease-acquire' | 'session/lease-release'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session. */
+  sessionId: SessionId
+}
+
+/** Result of a lease acquire or release. */
+export interface FederationSessionLeaseResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/lease-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Holder pod id when acquire succeeded. */
+  holder?: string
+  /** Failure code. */
+  code?: 'unauthorized' | 'stale-writer' | 'invalid'
+  /** Failure message. */
+  error?: string
+}
+
+/** Outcome of persist RPCs. */
+export type SessionPersistResult =
+  | { ok: true; lastSeq: number }
+  | { ok: false; code: 'disconnected' | 'timeout' | 'unauthorized' | 'invalid' | 'stale-writer' | 'unavailable'; message: string }
+
+/** Outcome of a lease RPC. */
+export type SessionLeaseResult =
+  | { ok: true; holder: string }
+  | { ok: false; code: 'disconnected' | 'timeout' | 'unauthorized' | 'stale-writer' | 'invalid'; message: string }
+
 /** Incoming or outgoing wire message union on client side. */
 export type FederationClientWireMessage =
   | FederationRegisterPayload
@@ -262,6 +324,10 @@ export type FederationClientWireMessage =
   | FederationQuestionRequestPayload
   | FederationQuestionResultPayload
   | FederationQuestionCancelPayload
+  | FederationSessionPersistPayload
+  | FederationSessionPersistResultPayload
+  | FederationSessionLeasePayload
+  | FederationSessionLeaseResultPayload
 
 /** Custom execution handler signature for executing delegated tasks. */
 export type DelegatedTaskExecutor = (

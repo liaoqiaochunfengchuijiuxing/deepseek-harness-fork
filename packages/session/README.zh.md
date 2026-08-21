@@ -26,6 +26,8 @@
 | [`session-persistence-jsonl/`](session-persistence-jsonl/README.md) | 将会话持久化到 JSONL 文件 | 注册到 `ctx.sessionPersistence` |
 | [`session-persistence-sqlite/`](session-persistence-sqlite/README.md) | 使用物理分片打包行的可选 SQLite 后端 | 注册到 `ctx.sessionPersistence` |
 
+联邦 spool 加上传后端在联邦家族：[`dsh-session-persistence-federation`](../federation/session-persistence-federation/README.md)。
+
 [会话持久化决策](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md)记录了持久化设计。
 
 ## 投影

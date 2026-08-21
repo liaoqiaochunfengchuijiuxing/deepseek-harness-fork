@@ -14,6 +14,7 @@
 4. **只读会话线：** 已认证的 pod 可通过 `ctx.sessionSources` 列出、搜索、检查并订阅 hub 会话。插件需要该服务；bundle 同时挂载 `dsh-session-source` 与 `dsh-session-source-local`。未认证的升级一律拒绝。
 5. **命令级会话发送：** 持有 `command`（或更高）token 的 pod 可通过 `session/send` 把消息送进活着的写者节点 inbox。同一会话的发送按到达顺序执行。重复的 `clientMessageId` 返回首次接受的 message id。没有活 agent 时以 `writer-offline` 失败；`read` token 以 `unauthorized` 失败。一次成功的发送把该 pod 记为该会话的指挥者。被替换连接的过期 close 不会把后继连接标成离线；重连后同一 `clientMessageId` 仍幂等。
 6. **审批与问询路由：** hub 前置注册 `approval/request` 监听器，并拦截 `ctx.userQuestions.ask`。当请求 agent 属于被指挥会话时，hub 经该 pod 连接转发并认领结果。没有指挥者、指挥者离线或无应答时 fail-closed（审批为 `unavailable`，问询为 `COMMANDER_UNAVAILABLE`），不会落到 hub 本地 UI。审批在途断线结算为 `unavailable`，绝不自动批准。`interactionTimeoutMs`（默认 `300000`）限制往返时限。
+7. **会话持久化与写者租约：** 持有 command 能力的 pod 可通过 `session/persist` 把事件批次写入 hub 现有的 `ctx.sessionPersistence`（hub profile 挂载的 JSONL 或 SQLite）。已存储的 seq 会被跳过。写者租约（`session/lease-acquire` / `session/lease-release`）记录唯一写者；其他 pod 持有租约时 persist 与 acquire 以 `stale-writer` 失败。pod 离线会释放其租约。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。
 
 ## 模型体验
 
@@ -47,5 +48,5 @@ hub 插件与指挥 pod 上为零。写者节点支付该操作获准或拒绝�
 
 ## 已知限制与延后工作
 
-- 多租户 token 吊销策略与细粒度访问控制列表将在后续里程碑（M3/M4）扩展。
+- 多租户 token 吊销策略与细粒度访问控制列表不在 v3 范围内。
 - Pod 间对等直连传输协商延后至 M5 里程碑。

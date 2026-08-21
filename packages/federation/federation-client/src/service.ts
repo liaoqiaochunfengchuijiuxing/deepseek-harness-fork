@@ -7,9 +7,9 @@
 
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { FederationPodClient } from './client.ts'
-import type { PodConnectionStatus, SessionSendResult } from './types.ts'
+import type { PodConnectionStatus, SessionLeaseResult, SessionPersistResult, SessionSendResult } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -65,5 +65,33 @@ export class FederationClientService extends Service {
     clientMessageId: string,
   ): Promise<SessionSendResult> {
     return this.client.sendToSession(sessionId, content, clientMessageId)
+  }
+
+  /**
+   * Upload a locally-spooled event batch to hub persistence.
+   * @param sessionId - session whose log is being uploaded.
+   * @param events - contiguous events to append.
+   * @param header - session header when the hub has not materialized this session.
+   * @returns last stored seq, or a structured failure.
+   */
+  persistSession(
+    sessionId: SessionId,
+    events: SessionEvent[],
+    header?: SessionHeader,
+  ): Promise<SessionPersistResult> {
+    return this.client.persistSession(sessionId, events, header)
+  }
+
+  /**
+   * Acquire or release the hub writer lease for a session.
+   * @param action - acquire or release.
+   * @param sessionId - target session.
+   * @returns holder pod id, or a structured failure.
+   */
+  leaseSession(
+    action: 'session/lease-acquire' | 'session/lease-release',
+    sessionId: SessionId,
+  ): Promise<SessionLeaseResult> {
+    return this.client.leaseSession(action, sessionId)
   }
 }

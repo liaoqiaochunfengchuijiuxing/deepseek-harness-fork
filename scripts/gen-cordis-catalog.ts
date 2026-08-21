@@ -545,6 +545,8 @@ export const TYPE_LINK_EXEMPTIONS: Readonly<Record<string, string>> = {
   FederationApprovalRequestPayload: 'event-local request contract is owned by packages/federation/federation-client/src/types.ts',
   FederationQuestionRequestPayload: 'event-local request contract is owned by packages/federation/federation-client/src/types.ts',
   SessionSendResult: 'service-local send result is owned by packages/federation/federation-client/src/types.ts',
+  SessionPersistResult: 'service-local persist result is owned by packages/federation/federation-client/src/types.ts',
+  SessionLeaseResult: 'service-local lease result is owned by packages/federation/federation-client/src/types.ts',
   BeginCommandRequest: 'event-local request contract is owned by packages/client/ui-input-trigger/src/types.ts',
   InsertReferenceRequest: 'event-local request contract is owned by packages/client/ui-input-trigger/src/types.ts',
   ConsumeTokenRequest: 'event-local request contract is owned by packages/client/ui-input-trigger/src/types.ts',

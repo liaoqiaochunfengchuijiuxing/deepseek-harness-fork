@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
 import { WebSocket } from 'ws'
 import * as SessionSourcePlugin from '@deepseek-ai/dsh-session-source'
 import type { ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -1286,6 +1287,395 @@ describe('FederationHubServer integration', () => {
     expect(streamCallback).toBeUndefined()
 
     podWs.close()
+  })
+})
+
+describe('session persist and leases', () => {
+  let ctx: Context
+  let service: FederationHubService
+
+  beforeEach(() => {
+    ctx = new Context()
+    service = new FederationHubService(ctx)
+  })
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  function lastPayload(send: ReturnType<typeof vi.fn>): FederationWireMessage {
+    return JSON.parse(String(send.mock.calls.at(-1)?.[0])) as FederationWireMessage
+  }
+
+  function memoryPersistence(): {
+    inspect: ReturnType<typeof vi.fn>
+    create: ReturnType<typeof vi.fn>
+    append: ReturnType<typeof vi.fn>
+  } {
+    const sessions = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    return {
+      inspect: vi.fn(async (id: SessionId) => {
+        const stored = sessions.get(String(id))
+        if (stored === undefined) throw new Error('missing')
+        return stored
+      }),
+      create: vi.fn(async (meta: SessionHeader) => {
+        sessions.set(String(meta.id), { meta, events: [] })
+      }),
+      append: vi.fn(async (id: SessionId, events: SessionEvent[]) => {
+        const stored = sessions.get(String(id))
+        if (stored === undefined) throw new Error('not materialized')
+        stored.events.push(...events)
+      }),
+    }
+  }
+
+  const header: SessionHeader = {
+    version: 0,
+    id: SessionId('sess-p'),
+    createdAt: 1000,
+    cwd: '/tmp/work',
+  }
+  const events: SessionEvent[] = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+  ]
+
+  it('rejects persist and lease from a read token', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-read', 'Read', {}, 'read', socket)
+    service.handlePodMessage('pod-read', {
+      type: 'session/persist',
+      requestId: 'p-unauth',
+      sessionId: header.id,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', code: 'unauthorized' })
+    service.handlePodMessage('pod-read', {
+      type: 'session/lease-acquire',
+      requestId: 'l-unauth',
+      sessionId: header.id,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/lease-result', code: 'unauthorized' })
+    })
+    service.handlePodMessage('pod-read', {
+      type: 'session/lease-release',
+      requestId: 'l-unauth-r',
+      sessionId: header.id,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/lease-result', code: 'unauthorized' })
+    })
+  })
+
+  it('rejects persist when hub persistence is missing', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-unavail',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', code: 'unavailable' })
+  })
+
+  it('rejects invalid persist payloads and header mismatches', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    ctx.provide('sessionPersistence', memoryPersistence())
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-invalid',
+      sessionId: '' as never,
+      events: 'nope' as never,
+    })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled()
+    })
+    expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', code: 'invalid' })
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-mismatch',
+      sessionId: header.id,
+      header: { ...header, id: SessionId('other') },
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({
+        type: 'session/persist-result',
+        requestId: 'p-mismatch',
+        code: 'invalid',
+      })
+    })
+  })
+
+  it('creates, appends, and skips already-stored seqs', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    const persistence = memoryPersistence()
+    ctx.provide('sessionPersistence', persistence)
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-1',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', lastSeq: 1 })
+    })
+    expect(persistence.create).toHaveBeenCalled()
+    expect(persistence.append).toHaveBeenCalledTimes(1)
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-2',
+      sessionId: header.id,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', requestId: 'p-2', lastSeq: 1 })
+    })
+    expect(persistence.append).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a stored event without seq as nextSeq 0', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    ctx.provide('sessionPersistence', {
+      inspect: async () => ({ events: [{}] }),
+      create: vi.fn(),
+      append: vi.fn(async () => undefined),
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-noseq',
+      sessionId: header.id,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', lastSeq: 1 })
+    })
+  })
+
+  it('acks an empty persist against an unknown session as lastSeq -1', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    ctx.provide('sessionPersistence', memoryPersistence())
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-empty',
+      sessionId: header.id,
+      events: [],
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({ type: 'session/persist-result', lastSeq: -1 })
+    })
+  })
+
+  it('stringifies a non-Error persist failure', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    ctx.provide('sessionPersistence', {
+      inspect: async () => {
+        throw new Error('missing')
+      },
+      create: async () => undefined,
+      append: async () => {
+        throw 42
+      },
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-42',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({
+        type: 'session/persist-result',
+        code: 'invalid',
+        error: '42',
+      })
+    })
+  })
+
+  it('maps persistence append failures to invalid', async () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    ctx.provide('sessionPersistence', {
+      inspect: async () => {
+        throw new Error('missing')
+      },
+      create: async () => undefined,
+      append: async () => {
+        throw new Error('contiguous seq')
+      },
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-fail',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    await vi.waitFor(() => {
+      expect(lastPayload(send)).toMatchObject({
+        type: 'session/persist-result',
+        code: 'invalid',
+        error: 'contiguous seq',
+      })
+    })
+  })
+
+  it('acquires, re-acquires, and rejects a second writer', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'session/lease-acquire',
+      requestId: 'l-a',
+      sessionId: header.id,
+    })
+    expect(lastPayload(a.send)).toMatchObject({ type: 'session/lease-result', holder: 'pod-a' })
+    expect(service.leaseHolder(header.id)).toBe('pod-a')
+    service.handlePodMessage('pod-a', {
+      type: 'session/lease-acquire',
+      requestId: 'l-a2',
+      sessionId: header.id,
+    })
+    expect(lastPayload(a.send)).toMatchObject({ holder: 'pod-a' })
+    service.handlePodMessage('pod-b', {
+      type: 'session/lease-acquire',
+      requestId: 'l-b',
+      sessionId: header.id,
+    })
+    expect(lastPayload(b.send)).toMatchObject({ type: 'session/lease-result', code: 'stale-writer' })
+    service.handlePodMessage('pod-b', {
+      type: 'session/persist',
+      requestId: 'p-b',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    expect(lastPayload(b.send)).toMatchObject({ type: 'session/persist-result', code: 'stale-writer' })
+  })
+
+  it('releases a lease so another pod can acquire', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'session/lease-acquire',
+      requestId: 'l-a',
+      sessionId: header.id,
+    })
+    service.handlePodMessage('pod-b', {
+      type: 'session/lease-release',
+      requestId: 'l-steal',
+      sessionId: header.id,
+    })
+    expect(lastPayload(b.send)).toMatchObject({ code: 'stale-writer' })
+    service.handlePodMessage('pod-a', {
+      type: 'session/lease-release',
+      requestId: 'l-rel',
+      sessionId: header.id,
+    })
+    expect(lastPayload(a.send)).toMatchObject({ holder: 'pod-a' })
+    expect(service.leaseHolder(header.id)).toBeUndefined()
+    service.handlePodMessage('pod-b', {
+      type: 'session/lease-acquire',
+      requestId: 'l-b',
+      sessionId: header.id,
+    })
+    expect(lastPayload(b.send)).toMatchObject({ holder: 'pod-b' })
+  })
+
+  it('rejects invalid lease acquire and ignores unknown pods', () => {
+    const { socket, send } = createFakeSocket()
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/lease-acquire',
+      requestId: 'l-empty',
+      sessionId: '' as never,
+    })
+    expect(lastPayload(send)).toMatchObject({ code: 'invalid' })
+    service.handlePodMessage('ghost', {
+      type: 'session/lease-acquire',
+      requestId: 'l-ghost',
+      sessionId: header.id,
+    })
+    service.handlePodMessage('ghost', {
+      type: 'session/persist',
+      requestId: 'p-ghost',
+      sessionId: header.id,
+      events,
+    })
+    service.handlePodMessage('ghost', {
+      type: 'session/lease-release',
+      requestId: 'l-ghost-r',
+      sessionId: header.id,
+    })
+    expect(send.mock.calls).toHaveLength(1)
+  })
+
+  it('does not reply persist or lease when the socket is not open', async () => {
+    const { socket, send } = createFakeSocket()
+    socket.readyState = 0
+    service.registerPod('pod-1', 'Pod', {}, 'command', socket)
+    service.handlePodMessage('pod-1', {
+      type: 'session/lease-acquire',
+      requestId: 'l-closed',
+      sessionId: header.id,
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/lease-release',
+      requestId: 'l-closed-r',
+      sessionId: header.id,
+    })
+    service.handlePodMessage('pod-1', {
+      type: 'session/persist',
+      requestId: 'p-closed',
+      sessionId: header.id,
+      header,
+      events,
+    })
+    await new Promise(r => setTimeout(r, 20))
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('releases leases when the holder goes offline', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'session/lease-acquire',
+      requestId: 'l-a',
+      sessionId: header.id,
+    })
+    expect(service.leaseHolder(header.id)).toBe('pod-a')
+    service.setPodStatus('pod-b', 'offline')
+    expect(service.leaseHolder(header.id)).toBe('pod-a')
+    service.setPodStatus('pod-a', 'offline')
+    expect(service.leaseHolder(header.id)).toBeUndefined()
+    service.handlePodMessage('pod-b', {
+      type: 'session/lease-acquire',
+      requestId: 'l-b',
+      sessionId: header.id,
+    })
+    expect(lastPayload(b.send)).toMatchObject({ holder: 'pod-b' })
   })
 })
 

@@ -14,6 +14,7 @@ Central control-plane service plugin for multi-node DeepSeek Harness federation.
 4. **Read-only session wire:** Authenticated pods may list, search, inspect, and subscribe to hub sessions through `ctx.sessionSources`. The plugin requires that service; the bundle mounts `dsh-session-source` and `dsh-session-source-local` beside it. Unauthenticated upgrades are refused.
 5. **Command-level session send:** A pod with a `command` (or higher) token may deliver `session/send` into a live writer-node inbox. Sends for one session run in arrival order. A repeated `clientMessageId` returns the first accepted message id. A missing live agent fails with `writer-offline`; a `read` token fails with `unauthorized`. A successful send records that pod as the session's commander. A replaced connection's stale close does not offline the live successor; after reconnect, the same `clientMessageId` is idempotent.
 6. **Approval and question routing:** The hub prepends an `approval/request` listener and intercepts `ctx.userQuestions.ask`. When the requesting agent belongs to a commanded session, the hub forwards over that pod's connection and claims the outcome. A missing, offline, or silent commander fails closed (`unavailable` for approval, `COMMANDER_UNAVAILABLE` for questions) and does not fall through to the hub's local UI. Disconnect while an approval is pending is `unavailable`, never an auto-grant. `interactionTimeoutMs` (default `300000`) bounds the round-trip.
+7. **Session persist and writer leases:** A command-capable pod may upload `session/persist` batches into the hub's existing `ctx.sessionPersistence` (JSONL or SQLite as the hub profile mounts). Already-stored seqs are skipped. A writer lease (`session/lease-acquire` / `session/lease-release`) records the single writer; persist and acquire fail as `stale-writer` when another pod holds the lease. Going offline releases that pod's leases. Persist payloads carry session id, header, and events — credentials never go on this wire.
 
 ## Model Experience
 
@@ -47,5 +48,5 @@ Neutral: audit events are log-only and are not in the model transcript.
 
 ## Known Limitations and Deferred Work
 
-- Multi-tenant token revocation policies and granular access-control lists will be extended in future milestones (M3/M4).
+- Multi-tenant token revocation policies and granular access-control lists remain out of v3.
 - Direct peer-to-peer relay negotiation is deferred to milestone M5.

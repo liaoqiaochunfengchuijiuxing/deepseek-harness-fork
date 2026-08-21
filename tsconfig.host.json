@@ -276,6 +276,7 @@
     { "path": "./packages/federation/federation-hub" },
     { "path": "./packages/federation/federation-client" },
     { "path": "./packages/federation/session-source-federation" },
+    { "path": "./packages/federation/session-persistence-federation" },
     { "path": "./packages/jobs/jobs" },
     { "path": "./packages/jobs/jobs-local" },
     { "path": "./packages/jobs/tool-jobs" },

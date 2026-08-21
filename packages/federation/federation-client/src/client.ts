@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval/types'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type {
@@ -26,6 +26,8 @@ import type {
   RemoteSubagentChunkPayload,
   RemoteSubagentStartPayload,
   RemoteSubagentStopPayload,
+  SessionLeaseResult,
+  SessionPersistResult,
   SessionSendResult,
 } from './types.ts'
 import { isApprovalOutcome } from './types.ts'
@@ -81,7 +83,7 @@ export interface FederationClientConfig {
   sandboxModes?: string[]
   /** Declared role for this pod. */
   role?: 'read' | 'command' | 'manage' | 'takeover'
-  /** Bound (ms) on a `session/send` round-trip. */
+  /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
@@ -110,6 +112,16 @@ interface ActiveTask {
 
 interface PendingSend {
   resolve: (result: SessionSendResult) => void
+  timer: NodeJS.Timeout
+}
+
+interface PendingPersist {
+  resolve: (result: SessionPersistResult) => void
+  timer: NodeJS.Timeout
+}
+
+interface PendingLease {
+  resolve: (result: SessionLeaseResult) => void
   timer: NodeJS.Timeout
 }
 
@@ -152,6 +164,8 @@ export class FederationPodClient {
   private currentReconnectDelay: number
   private readonly inFlightTasks = new Map<string, ActiveTask>()
   private readonly pendingSends = new Map<string, PendingSend>()
+  private readonly pendingPersists = new Map<string, PendingPersist>()
+  private readonly pendingLeases = new Map<string, PendingLease>()
   private readonly pendingApprovals = new Map<string, AbortController>()
   private readonly pendingQuestions = new Map<string, AbortController>()
 
@@ -213,6 +227,8 @@ export class FederationPodClient {
     }
     this.inFlightTasks.clear()
     this.rejectPendingSends('federation client disposed')
+    this.rejectPendingPersists('federation client disposed')
+    this.rejectPendingLeases('federation client disposed')
     this.abortPendingInteractions()
 
     if (this.socket) {
@@ -274,6 +290,80 @@ export class FederationPodClient {
         content,
         clientMessageId,
       })
+    })
+  }
+
+  /**
+   * Upload a locally-spooled event batch to hub persistence.
+   * @param sessionId - session whose log is being uploaded.
+   * @param events - contiguous events to append.
+   * @param header - session header when the hub has not materialized this session.
+   * @returns last stored seq, or a structured failure.
+   */
+  persistSession(
+    sessionId: SessionId,
+    events: SessionEvent[],
+    header?: SessionHeader,
+  ): Promise<SessionPersistResult> {
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.resolve({
+        ok: false,
+        code: 'disconnected',
+        message: 'federation client is not connected',
+      })
+    }
+    const requestId = randomUUID()
+    const timeoutMs = this.config.requestTimeoutMs ?? 10_000
+    return new Promise<SessionPersistResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingPersists.delete(requestId)
+        resolve({
+          ok: false,
+          code: 'timeout',
+          message: `session persist timed out after ${timeoutMs}ms`,
+        })
+      }, timeoutMs)
+      this.pendingPersists.set(requestId, { resolve, timer })
+      this.sendMessage({
+        type: 'session/persist',
+        requestId,
+        sessionId,
+        events,
+        ...header !== undefined ? { header } : {},
+      })
+    })
+  }
+
+  /**
+   * Acquire or release the hub writer lease for a session.
+   * @param action - acquire or release.
+   * @param sessionId - target session.
+   * @returns holder pod id, or a structured failure.
+   */
+  leaseSession(
+    action: 'session/lease-acquire' | 'session/lease-release',
+    sessionId: SessionId,
+  ): Promise<SessionLeaseResult> {
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.resolve({
+        ok: false,
+        code: 'disconnected',
+        message: 'federation client is not connected',
+      })
+    }
+    const requestId = randomUUID()
+    const timeoutMs = this.config.requestTimeoutMs ?? 10_000
+    return new Promise<SessionLeaseResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingLeases.delete(requestId)
+        resolve({
+          ok: false,
+          code: 'timeout',
+          message: `session lease timed out after ${timeoutMs}ms`,
+        })
+      }, timeoutMs)
+      this.pendingLeases.set(requestId, { resolve, timer })
+      this.sendMessage({ type: action, requestId, sessionId })
     })
   }
 
@@ -345,6 +435,8 @@ export class FederationPodClient {
       this.heartbeatTimer = undefined
     }
     this.rejectPendingSends('federation client is not connected')
+    this.rejectPendingPersists('federation client is not connected')
+    this.rejectPendingLeases('federation client is not connected')
     this.abortPendingInteractions()
     this.scheduleReconnect()
   }
@@ -354,6 +446,22 @@ export class FederationPodClient {
       clearTimeout(pending.timer)
       pending.resolve({ ok: false, code: 'disconnected', message })
       this.pendingSends.delete(id)
+    }
+  }
+
+  private rejectPendingPersists(message: string): void {
+    for (const [id, pending] of this.pendingPersists) {
+      clearTimeout(pending.timer)
+      pending.resolve({ ok: false, code: 'disconnected', message })
+      this.pendingPersists.delete(id)
+    }
+  }
+
+  private rejectPendingLeases(message: string): void {
+    for (const [id, pending] of this.pendingLeases) {
+      clearTimeout(pending.timer)
+      pending.resolve({ ok: false, code: 'disconnected', message })
+      this.pendingLeases.delete(id)
     }
   }
 
@@ -449,6 +557,45 @@ export class FederationPodClient {
       }
       case 'question/cancel': {
         this.cancelPending(this.pendingQuestions, msg)
+        break
+      }
+      case 'session/persist-result': {
+        const pending = this.pendingPersists.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingPersists.delete(msg.requestId)
+        if (typeof msg.lastSeq === 'number') {
+          pending.resolve({ ok: true, lastSeq: msg.lastSeq })
+          break
+        }
+        const persistCode = msg.code === 'unauthorized' || msg.code === 'invalid'
+          || msg.code === 'stale-writer' || msg.code === 'unavailable'
+          ? msg.code
+          : 'invalid'
+        pending.resolve({
+          ok: false,
+          code: persistCode,
+          message: msg.error ?? 'session persist failed',
+        })
+        break
+      }
+      case 'session/lease-result': {
+        const pending = this.pendingLeases.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingLeases.delete(msg.requestId)
+        if (typeof msg.holder === 'string' && msg.holder.length > 0 && msg.code === undefined) {
+          pending.resolve({ ok: true, holder: msg.holder })
+          break
+        }
+        const leaseCode = msg.code === 'unauthorized' || msg.code === 'stale-writer' || msg.code === 'invalid'
+          ? msg.code
+          : 'invalid'
+        pending.resolve({
+          ok: false,
+          code: leaseCode,
+          message: msg.error ?? 'session lease failed',
+        })
         break
       }
       default:
