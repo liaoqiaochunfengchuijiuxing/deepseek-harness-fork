@@ -267,87 +267,20 @@ export class FederationHubServer {
 
         if (msg.type === 'subagent/start') {
           inFlightRunId = msg.id
-          targetPodId = msg.env?.FEDERATION_TARGET_POD
-
-          if (targetPodId) {
-            try {
-              const stopMsg = await this.service.delegateToPod(
-                targetPodId,
-                msg,
-                (delta) => {
-                  if (socket.readyState === 1 /* WebSocket.OPEN */) {
-                    socket.send(JSON.stringify({
-                      type: 'subagent/chunk',
-                      id: msg.id,
-                      delta,
-                    }))
-                  }
-                },
-              )
-              if (socket.readyState === 1) {
-                socket.send(JSON.stringify(stopMsg))
-              }
-            } catch (err) {
-              if (socket.readyState === 1) {
-                socket.send(JSON.stringify({
-                  type: 'subagent/stop',
-                  id: msg.id,
-                  output: [],
-                  stopReason: 'error',
-                  diagnostic: err instanceof Error ? err.message : String(err),
-                }))
-              }
-            }
+          const addressed = typeof msg.targetPodId === 'string' && msg.targetPodId.length > 0
+            ? msg.targetPodId
+            : undefined
+          const firstOnline = this.service.listPods().find(pod => pod.status === 'online')?.podId
+          targetPodId = addressed ?? firstOnline
+          if (targetPodId === undefined) {
+            this.replySubagentStop(socket, msg.id, 'Hub has no online pods available to handle subagent delegation')
             return
           }
-
-          // Direct execution on Hub or fallback pod
-          const pods = this.service.listPods().filter(p => p.status === 'online')
-          const [firstPod] = pods
-          if (firstPod) {
-            try {
-              const stopMsg = await this.service.delegateToPod(
-                firstPod.podId,
-                msg,
-                (delta) => {
-                  if (socket.readyState === 1) {
-                    socket.send(JSON.stringify({
-                      type: 'subagent/chunk',
-                      id: msg.id,
-                      delta,
-                    }))
-                  }
-                },
-              )
-              if (socket.readyState === 1) {
-                socket.send(JSON.stringify(stopMsg))
-              }
-            } catch (err) {
-              if (socket.readyState === 1) {
-                socket.send(JSON.stringify({
-                  type: 'subagent/stop',
-                  id: msg.id,
-                  output: [],
-                  stopReason: 'error',
-                  diagnostic: err instanceof Error ? err.message : String(err),
-                }))
-              }
-            }
-            return
-          }
-
-          // No online pods and no local agent runner available
-          if (socket.readyState === 1) {
-            socket.send(JSON.stringify({
-              type: 'subagent/stop',
-              id: msg.id,
-              output: [],
-              stopReason: 'error',
-              diagnostic: 'Hub has no online pods available to handle subagent delegation',
-            }))
-          }
-        } else if (msg.type === 'subagent/abort') {
-          if (targetPodId && inFlightRunId) {
+          await this.relaySubagentStart(socket, targetPodId, msg)
+          return
+        }
+        if (msg.type === 'subagent/abort') {
+          if (targetPodId !== undefined && inFlightRunId !== undefined) {
             this.service.cancelPodDelegation(targetPodId, inFlightRunId, msg.reason)
           }
         }
@@ -357,5 +290,59 @@ export class FederationHubServer {
     socket.on('error', () => {
       socket.terminate()
     })
+  }
+
+  /**
+   * Forward one subagent start to a named pod and stream chunk/stop back to the caller.
+   * @param socket - caller WebSocket on `/federation/subagent`.
+   * @param podId - online pod that should execute.
+   * @param msg - start message from the caller.
+   */
+  private async relaySubagentStart(
+    socket: WebSocket,
+    podId: string,
+    msg: Extract<FederationWireMessage, { type: 'subagent/start' }>,
+  ): Promise<void> {
+    try {
+      const stopMsg = await this.service.delegateToPod(
+        podId,
+        msg,
+        (delta) => {
+          if (socket.readyState === 1) {
+            socket.send(JSON.stringify({
+              type: 'subagent/chunk',
+              id: msg.id,
+              delta,
+            }))
+          }
+        },
+      )
+      if (socket.readyState === 1) {
+        socket.send(JSON.stringify(stopMsg))
+      }
+    } catch (err) {
+      this.replySubagentStop(
+        socket,
+        msg.id,
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+  }
+
+  /**
+   * Send a terminal error stop to a subagent caller when relay cannot run.
+   * @param socket - caller WebSocket.
+   * @param id - run identifier.
+   * @param diagnostic - failure text.
+   */
+  private replySubagentStop(socket: WebSocket, id: string, diagnostic: string): void {
+    if (socket.readyState !== 1) return
+    socket.send(JSON.stringify({
+      type: 'subagent/stop',
+      id,
+      output: [],
+      stopReason: 'error',
+      diagnostic,
+    }))
   }
 }

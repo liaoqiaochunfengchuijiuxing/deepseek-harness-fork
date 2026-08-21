@@ -30,6 +30,7 @@
 | `tokenEnv` | 可选 | 通过 `ctx.credentials` 或宿主环境解析的凭据引用（环境变量名）。 |
 | `cwd` | 父会话 cwd | 工作目录覆盖。 |
 | `connectTimeoutMs` | `5000` | 建立 WebSocket 连接的超时上限（毫秒）。 |
+| `targetPodId` | 可选 | 应执行该 run 的 hub 已注册 pod。设置后 start 消息携带 `targetPodId`，hub 转发到该 pod。省略时 hub 选择任一在线 pod。 |
 
 ```yaml
 - id: subagent-remote
@@ -81,3 +82,4 @@
 - **仅限一次性运行**——跨远程 subagent 连接的可续跑后台会话延后至后续联邦里程碑。
 - **每次运行单一活跃 socket**——跨多次并发 subagent 运行的持久连接多路复用已延后。
 - **不传递凭证材料**——远端节点使用自身模型凭据执行；任务绝不跨节点转发委派方的 API key。
+- **Peer 中继走 hub**——`targetPodId` 经 hub 的连接对指向另一台 pod。pod 直连传输是后续优化。

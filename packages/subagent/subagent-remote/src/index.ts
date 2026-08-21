@@ -50,6 +50,11 @@ export interface Config {
   cwd?: string
   /** Bound (ms) on establishing WebSocket connection (default 5000). */
   connectTimeoutMs?: number
+  /**
+   * Hub-registered pod id for peer relay. When set, the start message carries
+   * `targetPodId` so the hub forwards to that pod instead of picking any online pod.
+   */
+  targetPodId?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -59,10 +64,12 @@ export const Config: z<Config> = z.object({
   tokenEnv: z.string().role('credential-ref'),
   cwd: z.string(),
   connectTimeoutMs: z.number().step(1).min(1).default(DEFAULT_CONNECT_TIMEOUT_MS),
+  targetPodId: z.string().description('Hub-registered pod id for peer relay'),
 })
 
 /** The shape after schemastery applied the defaults. */
-type ResolvedConfig = Required<Omit<Config, 'cwd' | 'token' | 'tokenEnv'>> & Pick<Config, 'cwd' | 'token' | 'tokenEnv'>
+type ResolvedConfig = Required<Omit<Config, 'cwd' | 'token' | 'tokenEnv' | 'targetPodId'>>
+  & Pick<Config, 'cwd' | 'token' | 'tokenEnv' | 'targetPodId'>
 
 /** Resolve the authentication token from config or credentials seam. */
 async function resolveToken(ctx: Context, config: ResolvedConfig): Promise<string | undefined> {
@@ -102,6 +109,7 @@ class RemoteSubagentProvider implements SubagentProvider {
       ...token !== undefined ? { token } : {},
       cwd: resolveChildCwd('subagent-remote', this.config.cwd, request.parent.session.header.cwd),
       connectTimeoutMs: this.config.connectTimeoutMs,
+      ...this.config.targetPodId !== undefined ? { targetPodId: this.config.targetPodId } : {},
       onError: (error, stopReason) => {
         this.ctx.logger.warn(`subagent-remote "${this.name}": child run failed (${stopReason}): ${error.message}`)
       },

@@ -9,7 +9,7 @@
 1. **Pod 注册表（`ctx.federationHub`）：** 维护已连接 pod 的实时记录，包含唯一 `podId`、可读名称 `name`、声明的能力集 `capabilities`（工作区路径、沙箱模式、支持工具）、权限级别 `role` 以及 `online` / `offline` 状态。
 2. **WebSocket 网关：**
    - `/federation/connect`：Pod 接入端点。通过 per-pod Bearer token 校验鉴权，注册 pod 元数据，并维持周期性心跳应答。
-   - `/federation/subagent`：委派执行端点。接收来自远程委派方（如 [`dsh-subagent-remote`](../../subagent/subagent-remote/README.md)）的 `subagent/start` 消息，将执行路由至指定或在线的可用 pod，实时转发流式文本分块，并同步中断信号。
+   - `/federation/subagent`：委派执行端点。接收来自远程委派方（如 [`dsh-subagent-remote`](../../subagent/subagent-remote/README.md)）的 `subagent/start`。带 `targetPodId` 的 start 会中继到该已注册 pod（pod↔pod）；否则 hub 选择一台在线 pod。chunk 与 stop/abort 走同一对 socket。
 3. **心跳与保活管理：** 监测 pod 心跳；在超过可配置的 `heartbeatTimeoutMs` 未收到心跳时将 pod 标记为 `offline`，并以明确错误原因结算所有在途委派。
 4. **只读会话线：** 已认证的 pod 可通过 `ctx.sessionSources` 列出、搜索、检查并订阅 hub 会话。插件需要该服务；bundle 同时挂载 `dsh-session-source` 与 `dsh-session-source-local`。未认证的升级一律拒绝。
 5. **命令级会话发送：** 持有 `command`（或更高）token 的 pod 可通过 `session/send` 把消息送进活着的写者节点 inbox。同一会话的发送按到达顺序执行。重复的 `clientMessageId` 返回首次接受的 message id。没有活 agent 时以 `writer-offline` 失败；`read` token 以 `unauthorized` 失败。一次成功的发送把该 pod 记为该会话的指挥者。被替换连接的过期 close 不会把后继连接标成离线；重连后同一 `clientMessageId` 仍幂等。

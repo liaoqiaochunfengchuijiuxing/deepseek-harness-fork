@@ -28,6 +28,8 @@ export interface RemoteRunSpec {
   cwd: string
   /** Bound (ms) on establishing WebSocket connection. */
   connectTimeoutMs: number
+  /** Hub-registered pod that should execute this run. */
+  targetPodId?: string
   /** Sink for child-level failures flattened to stop reasons. */
   onError?: (error: Error, stopReason: SubagentStopReason) => void
 }
@@ -205,6 +207,7 @@ export async function startRemoteRun(request: SubagentStartRequest, spec: Remote
     ...request.label !== undefined ? { label: request.label } : {},
     prompt: request.prompt,
     cwd: spec.cwd,
+    ...spec.targetPodId !== undefined ? { targetPodId: spec.targetPodId } : {},
   }
   socket.send(JSON.stringify(startMessage))
 

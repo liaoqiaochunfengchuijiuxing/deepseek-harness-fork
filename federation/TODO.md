@@ -42,7 +42,7 @@
 
 ## M5 peer 与细粒度（v4，可选）
 
-- [ ] T5.1 hub 中继 pod↔pod
+- [x] T5.1 hub 中继 pod↔pod
 - [ ] T5.2 capability-server 粒度（remote fs/subprocess）
 - [ ] T5.3 直连优化
 

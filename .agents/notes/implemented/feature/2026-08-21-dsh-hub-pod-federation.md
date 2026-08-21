@@ -88,7 +88,7 @@ Workspace files are not carried by session sync. Work spans nodes through a shar
 
 ## Phasing
 
-v0 through v3 are in the tree; v4 remains.
+v0 through v3 are in the tree; v4 peer relay is in the tree, and remote fs/subprocess plus direct transport remain.
 
 - v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser.
 - v1: read-level federation session source — native listing, search, live rendering of remote sessions on a pod, with source badges and generic-card fallback for unknown node kinds.
@@ -122,7 +122,7 @@ v0, v1, v2, and v3 are in the tree:
 
 A command-capable pod delivers `session/send` into a live writer-node inbox, in order, with `clientMessageId` idempotency; a missing live agent fails as `writer-offline`. A successful send records that pod as commander: hub `approval/request` and `ctx.userQuestions.ask` for that session forward over that connection and fail closed without an answerer. An in-flight disconnect never auto-grants; a replaced socket's stale close does not offline the live successor; a duplicate in-flight approval `requestId` is coalesced.
 
-A roaming pod mounts `dsh-session-persistence-federation` as `ctx.sessionPersistence`: appends are durable on a local JSON spool first, then uploaded with monotonic seq resume. The hub applies `session/persist` to its existing JSONL or SQLite backend; leases live in memory on `FederationHubService`. `prepare` acquires the writer lease when the client is connected; a lease held by another pod fails as stale-writer; going offline releases that pod's leases. `/fork_to_local` copies a hub log into local persistence with identical `deriveMessages()`; unknown required event types and foreign format versions are refused. `/push_to_hub` uploads a local log. Persist payloads carry session id, header, and events — credentials never go on that wire. Peer relay remains out of tree.
+A roaming pod mounts `dsh-session-persistence-federation` as `ctx.sessionPersistence`: appends are durable on a local JSON spool first, then uploaded with monotonic seq resume. The hub applies `session/persist` to its existing JSONL or SQLite backend; leases live in memory on `FederationHubService`. `prepare` acquires the writer lease when the client is connected; a lease held by another pod fails as stale-writer; going offline releases that pod's leases. `/fork_to_local` copies a hub log into local persistence with identical `deriveMessages()`; unknown required event types and foreign format versions are refused. `/push_to_hub` uploads a local log. Persist payloads carry session id, header, and events — credentials never go on that wire. A remote subagent start may name `targetPodId`; the hub relays that run over the target pod's existing connection. Remote fs/subprocess providers and direct pod-to-pod transport remain out of tree.
 
 ## Testing
 
@@ -132,6 +132,7 @@ A roaming pod mounts `dsh-session-persistence-federation` as `ctx.sessionPersist
 - T3.2: the same hub spec forwards approval and question payloads to the commander, claims outcomes, and fails closed when the commander is missing or silent; the client spec answers over a real WebSocket through programmatic answerers and the pod waterfalls.
 - T3.3: `packages/federation/federation-hub/tests/federation-e2e-m3.spec.ts` delivers a command to the writer inbox, routes approval to the commander without auto-grant, fails a pending approval on disconnect, and resends the same `clientMessageId` after reconnect. The client spec coalesces a duplicate in-flight `requestId`.
 - M4: `packages/federation/session-persistence-federation/tests/session-persistence-federation.spec.ts` appends locally when hub upload fails, retries the unacked prefix, and refuses unknown required events. Hub persist/lease unit tests skip stored seqs, reject stale writers, and release leases on offline. `packages/federation/federation-hub/tests/federation-e2e-m4.spec.ts` uploads a spool batch, enforces a live lease, forks with identical derived messages, and asserts persist payloads carry no credentials.
+- T5.1: `packages/federation/federation-hub/tests/federation-e2e-m5.spec.ts` addresses `pod-b` through `targetPodId` and does not execute on the first online pod. Hub unit tests relay chunk/stop/abort across a pair of connected pods.
 
 ## Risks
 

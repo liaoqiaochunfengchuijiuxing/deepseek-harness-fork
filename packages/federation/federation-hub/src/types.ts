@@ -100,6 +100,8 @@ export interface RemoteSubagentStartMessage {
   cwd?: string
   /** Extra environment variables. */
   env?: Record<string, string>
+  /** Hub-registered pod that should execute this run. Absent: hub picks an online pod. */
+  targetPodId?: string
 }
 
 /** Subagent cancel/abort message across the federation wire. */

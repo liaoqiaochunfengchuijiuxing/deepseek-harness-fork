@@ -88,7 +88,7 @@ Pod 模式是组合选择（profile），不是独立产品：
 
 ## Phasing
 
-v0 到 v3 已在树中；v4 仍待做。
+v0 到 v3 已在树中；v4 的 peer 中继已在树中，remote fs/subprocess 与直连传输仍待做。
 
 - v0：hub 带注册表、外拨连接和 `dsh-subagent-remote` 服务端端点；pod 客户端插件；hub 委派 pod；pod 用浏览器触达 hub 会话。
 - v1：只读级联邦会话源——pod 上原生的远端会话列表、搜索、实时渲染，带来源徽标，未知节点类型回退既有 generic 卡片。
@@ -122,7 +122,7 @@ v0、v1、v2 与 v3 已在树中：
 
 持有 command 能力的 pod 按到达顺序把 `session/send` 送进活着的写者节点 inbox，并用 `clientMessageId` 幂等；没有活 agent 时以 `writer-offline` 失败。一次成功的发送把该 pod 记为指挥者：该会话上的 hub `approval/request` 与 `ctx.userQuestions.ask` 经该连接转发，没有应答者时 fail-closed。在途断线绝不自动批准；被替换 socket 的过期 close 不会把后继连接标成离线；在途重复的审批 `requestId` 会合并。
 
-漫游 pod 把 `dsh-session-persistence-federation` 挂为 `ctx.sessionPersistence`：append 先在本地 JSON spool 落盘，再按单调 seq 续传上传。hub 把 `session/persist` 写入现有的 JSONL 或 SQLite 后端；租约存在 `FederationHubService` 的内存表里。`prepare` 在客户端已连接时获取写者租约；租约被其他 pod 持有时以 stale-writer 失败；pod 离线会释放其租约。`/fork_to_local` 把 hub 日志复制进本地持久化，且 `deriveMessages()` 一致；未知必读事件类型与外版本格式会被拒绝。`/push_to_hub` 上传本地日志。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。peer 中继仍未在树中。
+漫游 pod 把 `dsh-session-persistence-federation` 挂为 `ctx.sessionPersistence`：append 先在本地 JSON spool 落盘，再按单调 seq 续传上传。hub 把 `session/persist` 写入现有的 JSONL 或 SQLite 后端；租约存在 `FederationHubService` 的内存表里。`prepare` 在客户端已连接时获取写者租约；租约被其他 pod 持有时以 stale-writer 失败；pod 离线会释放其租约。`/fork_to_local` 把 hub 日志复制进本地持久化，且 `deriveMessages()` 一致；未知必读事件类型与外版本格式会被拒绝。`/push_to_hub` 上传本地日志。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。remote subagent start 可以带 `targetPodId`；hub 经目标 pod 的既有连接中继该 run。remote fs/subprocess provider 与 pod 直连传输仍未在树中。
 
 ## Testing
 
@@ -132,6 +132,7 @@ v0、v1、v2 与 v3 已在树中：
 - T3.2：同一份 hub spec 把审批与问询转发到指挥者、认领结果，并在指挥者缺失或无应答时 fail-closed；client spec 在真实 WebSocket 上通过程序化 answerer 与 pod waterfall 作答。
 - T3.3：`packages/federation/federation-hub/tests/federation-e2e-m3.spec.ts` 把命令送进写者 inbox、把审批路由到指挥 pod 且不自动批准、在途断线将未决审批 fail-closed，并在重连后用同一 `clientMessageId` 幂等重发。client spec 合并在途重复的 `requestId`。
 - M4：`packages/federation/session-persistence-federation/tests/session-persistence-federation.spec.ts` 在 hub 上传失败时仍本地 append、重试未确认前缀，并拒绝未知必读事件。hub persist/lease 单测跳过已存 seq、拒绝 stale-writer，并在离线时释放租约。`packages/federation/federation-hub/tests/federation-e2e-m4.spec.ts` 上传 spool 批次、强制活租约、fork 后 derived messages 一致，并断言 persist 载荷不含凭据。
+- T5.1：`packages/federation/federation-hub/tests/federation-e2e-m5.spec.ts` 用 `targetPodId` 指向 `pod-b`，不会在第一台在线 pod 上执行。hub 单测在一对已连接 pod 上中继 chunk/stop/abort。
 
 ## Risks
 

@@ -413,6 +413,42 @@ export class FederationHubService extends Service {
         }
         break
       }
+      case 'subagent/start': {
+        const target = message.targetPodId
+        if (typeof target !== 'string' || target.length === 0) break
+        const origin = this.pods.get(podId)
+        if (origin === undefined || origin.socket.readyState !== 1) break
+        const originSocket = origin.socket
+        void this.delegateToPod(target, message, (delta) => {
+          if (originSocket.readyState === 1) {
+            originSocket.send(JSON.stringify({
+              type: 'subagent/chunk',
+              id: message.id,
+              delta,
+            }))
+          }
+        }).then((stop) => {
+          if (originSocket.readyState === 1) originSocket.send(JSON.stringify(stop))
+        }, (err: unknown) => {
+          if (originSocket.readyState === 1) {
+            originSocket.send(JSON.stringify({
+              type: 'subagent/stop',
+              id: message.id,
+              output: [],
+              stopReason: 'error',
+              diagnostic: err instanceof Error ? err.message : String(err),
+            }))
+          }
+        })
+        break
+      }
+      case 'subagent/abort': {
+        const delegation = this.delegations.get(message.id)
+        if (delegation !== undefined) {
+          this.cancelPodDelegation(delegation.podId, message.id, message.reason)
+        }
+        break
+      }
       case 'session/list': {
         void (async () => {
           const record = this.pods.get(podId)

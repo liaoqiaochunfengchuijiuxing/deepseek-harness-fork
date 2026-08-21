@@ -30,6 +30,7 @@ The provider advertises no start-time capabilities (`outputSchema`/`depthLimit`/
 | `tokenEnv` | optional | Credential reference (environment-variable name) resolved via `ctx.credentials` or ambient environment. |
 | `cwd` | parent session cwd | Working-directory override. |
 | `connectTimeoutMs` | `5000` | Bound (ms) on establishing WebSocket connection. |
+| `targetPodId` | optional | Hub-registered pod that should execute the run. When set, the start message carries `targetPodId` and the hub relays to that pod. When omitted, the hub picks any online pod. |
 
 ```yaml
 - id: subagent-remote
@@ -81,3 +82,4 @@ Append-only; newly visible content follows the reusable request prefix and does 
 - **One-shot runs only** — continuable background sessions over remote subagent connections are deferred to later federation milestones.
 - **Single active socket per run** — persistent connection multiplexing across multiple concurrent subagent runs is deferred.
 - **No credential transfer** — remote nodes execute using their own model credentials; tasks cannot forward delegator API keys across nodes.
+- **Peer relay uses the hub** — `targetPodId` addresses another pod through the hub's connection pair. Direct pod-to-pod transport is a later optimization.

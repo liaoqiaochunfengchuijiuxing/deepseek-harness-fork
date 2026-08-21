@@ -62,6 +62,8 @@ export interface RemoteSubagentStartPayload {
   label?: string | undefined
   /** Optional working directory override. */
   cwd?: string | undefined
+  /** Hub-registered pod that should execute this run, when the caller addressed a peer. */
+  targetPodId?: string | undefined
 }
 
 /** Task streaming chunk payload sent back to hub. */

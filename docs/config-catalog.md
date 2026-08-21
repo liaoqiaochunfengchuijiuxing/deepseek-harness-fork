@@ -732,6 +732,8 @@ export interface RemoteSubagentStartPayload {
   label?: string | undefined
   /** Optional working directory override. */
   cwd?: string | undefined
+  /** Hub-registered pod that should execute this run, when the caller addressed a peer. */
+  targetPodId?: string | undefined
 }
 
 /** Task terminal stop payload sent back to hub. */
@@ -2579,6 +2581,11 @@ export interface Config {
   cwd?: string
   /** Bound (ms) on establishing WebSocket connection (default 5000). */
   connectTimeoutMs?: number
+  /**
+   * Hub-registered pod id for peer relay. When set, the start message carries
+   * `targetPodId` so the hub forwards to that pod instead of picking any online pod.
+   */
+  targetPodId?: string
 }
 ```
 

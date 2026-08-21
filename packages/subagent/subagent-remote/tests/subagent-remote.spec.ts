@@ -149,11 +149,49 @@ describe('dsh-subagent-remote provider integration', () => {
         label: 'do task A',
         cwd: process.cwd(),
       })
+      expect(receivedStart && 'targetPodId' in receivedStart ? receivedStart.targetPodId : undefined).toBeUndefined()
 
       const disposal = run.dispose()
       expect(run.dispose()).toBe(disposal)
       await disposal
 
+      await ctx.fiber.dispose()
+    } finally {
+      await mock.close()
+    }
+  })
+
+  it('addresses a hub-registered peer via targetPodId on the start message', async () => {
+    const mock = await createMockServer()
+    let receivedStart: RemoteSubagentClientMessage | undefined
+    mock.server.on('connection', (socket) => {
+      socket.on('message', (data: RawData) => {
+        const msg = JSON.parse(rawDataToString(data)) as RemoteSubagentClientMessage
+        if (msg.type === 'subagent/start') {
+          receivedStart = msg
+          socket.send(JSON.stringify({
+            type: 'subagent/stop',
+            id: msg.id,
+            output: [{ type: 'text', text: 'from peer' }],
+            stopReason: 'completed',
+          }))
+        }
+      })
+    })
+    try {
+      const ctx = new Context()
+      await ctx.plugin(SubagentRuntime)
+      await ctx.plugin(remotePlugin, {
+        providerName: 'peer-linux',
+        endpoint: mock.endpoint,
+        targetPodId: 'pod-linux-compute',
+      })
+      const result = await (await ctx.subagents.start('peer-linux', makeRequest('peer task'))).result
+      expect(result.stopReason).toBe('completed')
+      expect(receivedStart).toMatchObject({
+        type: 'subagent/start',
+        targetPodId: 'pod-linux-compute',
+      })
       await ctx.fiber.dispose()
     } finally {
       await mock.close()

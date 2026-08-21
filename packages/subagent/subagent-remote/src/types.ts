@@ -20,6 +20,8 @@ export interface RemoteSubagentStartMessage {
   cwd?: string
   /** Extra environment variables for the remote execution environment. */
   env?: Record<string, string>
+  /** Hub-registered pod that should execute this run. Absent: hub picks an online pod. */
+  targetPodId?: string
 }
 
 /** Message from client to remote endpoint to abort an in-flight subagent run. */

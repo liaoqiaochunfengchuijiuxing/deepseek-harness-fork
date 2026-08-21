@@ -1077,7 +1077,7 @@ describe('FederationHubServer integration', () => {
       type: 'subagent/start',
       id: 'delegation-run-1',
       prompt: [{ type: 'text', text: 'Solve problem' }],
-      env: { FEDERATION_TARGET_POD: 'worker-pod-1' },
+      targetPodId: 'worker-pod-1',
     }
     clientWs.send(JSON.stringify(startMsg))
 
@@ -1124,6 +1124,26 @@ describe('FederationHubServer integration', () => {
 
     expect(stopMsg.stopReason).toBe('error')
     expect(stopMsg.diagnostic).toMatch(/no online pods/)
+    clientWs.close()
+  })
+
+  it('fails a targeted relay when the named pod is offline', async () => {
+    const clientWs = new WebSocket(`ws://127.0.0.1:${port}/federation/subagent?token=${secretToken}`)
+    await new Promise<void>((res) => { clientWs.on('open', () => { res() }) })
+    clientWs.send(JSON.stringify({
+      type: 'subagent/start',
+      id: 'delegation-missing-pod',
+      prompt: [{ type: 'text', text: 'peer task' }],
+      targetPodId: 'pod-absent',
+    }))
+    const stopMsg = await new Promise<RemoteSubagentStopMessage>((resolve) => {
+      clientWs.on('message', (data) => {
+        const msg = JSON.parse(rawDataToString(data)) as FederationWireMessage
+        if (msg.type === 'subagent/stop') resolve(msg)
+      })
+    })
+    expect(stopMsg.stopReason).toBe('error')
+    expect(stopMsg.diagnostic).toMatch(/pod-absent/)
     clientWs.close()
   })
 
@@ -1340,6 +1360,148 @@ describe('session persist and leases', () => {
     { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
   ]
+
+  it('relays a peer subagent start from one pod to another', async () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-1',
+      prompt: [{ type: 'text', text: 'peer work' }],
+      targetPodId: 'pod-b',
+    })
+    expect(JSON.parse(String(b.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'subagent/start',
+      id: 'peer-1',
+      targetPodId: 'pod-b',
+    })
+    service.handlePodMessage('pod-b', {
+      type: 'subagent/chunk',
+      id: 'peer-1',
+      delta: 'from-b',
+    })
+    expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'subagent/chunk',
+      delta: 'from-b',
+    })
+    service.handlePodMessage('pod-b', {
+      type: 'subagent/stop',
+      id: 'peer-1',
+      output: [{ type: 'text', text: 'done' }],
+      stopReason: 'completed',
+    })
+    await vi.waitFor(() => {
+      expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+        type: 'subagent/stop',
+        stopReason: 'completed',
+      })
+    })
+  })
+
+  it('maps a missing peer target to an error stop on the origin pod', async () => {
+    const a = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-miss',
+      prompt: [{ type: 'text', text: 'x' }],
+      targetPodId: 'pod-gone',
+    })
+    await vi.waitFor(() => {
+      expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+        type: 'subagent/stop',
+        stopReason: 'error',
+      })
+    })
+  })
+
+  it('aborts an in-flight peer relay', async () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-abort',
+      prompt: [{ type: 'text', text: 'x' }],
+      targetPodId: 'pod-b',
+    })
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/abort',
+      id: 'peer-abort',
+      reason: 'origin cancelled',
+    })
+    await vi.waitFor(() => {
+      expect(JSON.parse(String(a.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+        type: 'subagent/stop',
+        stopReason: 'aborted',
+      })
+    })
+    expect(JSON.parse(String(b.send.mock.calls.at(-1)?.[0]))).toMatchObject({
+      type: 'subagent/abort',
+      id: 'peer-abort',
+    })
+  })
+
+  it('ignores an unaddressed start and an abort for an unknown run', () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-none',
+      prompt: [{ type: 'text', text: 'x' }],
+    })
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/abort',
+      id: 'never-started',
+    })
+    service.handlePodMessage('ghost', {
+      type: 'subagent/start',
+      id: 'peer-ghost',
+      prompt: [{ type: 'text', text: 'x' }],
+      targetPodId: 'pod-b',
+    })
+    a.socket.readyState = 0
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-closed',
+      prompt: [{ type: 'text', text: 'x' }],
+      targetPodId: 'pod-b',
+    })
+    expect(b.send).not.toHaveBeenCalled()
+  })
+
+  it('does not send chunk or stop to a closed origin socket', async () => {
+    const a = createFakeSocket()
+    const b = createFakeSocket()
+    service.registerPod('pod-a', 'A', {}, 'command', a.socket)
+    service.registerPod('pod-b', 'B', {}, 'command', b.socket)
+    service.handlePodMessage('pod-a', {
+      type: 'subagent/start',
+      id: 'peer-closed-origin',
+      prompt: [{ type: 'text', text: 'x' }],
+      targetPodId: 'pod-b',
+    })
+    a.send.mockClear()
+    a.socket.readyState = 0
+    service.handlePodMessage('pod-b', {
+      type: 'subagent/chunk',
+      id: 'peer-closed-origin',
+      delta: 'late',
+    })
+    service.handlePodMessage('pod-b', {
+      type: 'subagent/stop',
+      id: 'peer-closed-origin',
+      output: [],
+      stopReason: 'completed',
+    })
+    await Promise.resolve()
+    expect(a.send).not.toHaveBeenCalled()
+  })
 
   it('rejects persist and lease from a read token', async () => {
     const { socket, send } = createFakeSocket()
