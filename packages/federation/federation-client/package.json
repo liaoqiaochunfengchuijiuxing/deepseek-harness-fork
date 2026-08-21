@@ -45,6 +45,9 @@
     "@deepseek-ai/dsh-subagent": "workspace:^"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-session-source": "workspace:^",
+    "@deepseek-ai/dsh-session-source-federation": "workspace:^",
+    "@deepseek-ai/dsh-session-source-local": "workspace:^",
     "@deepseek-ai/schemastery": "workspace:^",
     "ws": "^8.21.0"
   },
@@ -53,6 +56,9 @@
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
+    "@deepseek-ai/dsh-session-source": "workspace:^",
+    "@deepseek-ai/dsh-session-source-federation": "workspace:^",
+    "@deepseek-ai/dsh-session-source-local": "workspace:^",
     "@deepseek-ai/dsh-subagent": "workspace:^",
     "@types/ws": "^8.18.1"
   }

@@ -2,7 +2,18 @@
 
 [English](README.md) | 中文
 
-这是围绕 `core/session` 内存中运行的服务构建的持久功能族：包括持久化 seam 及其存储后端和检查点策略、提供日志派生全量值的投影 seam、日志支持的标题，以及外发会话遥测。它们全部都是**产品**包（package）。`session-query/` 仍是同级独立组：读取／工具接口的消费不依赖持久化内部实现。
+这是围绕 `core/session` 内存中运行的服务构建的持久功能族：包括持久化 seam 及其存储后端和检查点策略、提供日志派生全量值的投影 seam、日志支持的标题、外发会话遥测，以及多源会话列表 seam。它们全部都是**产品**包（package）。`session-query/` 仍是同级独立组：读取／工具接口的消费不依赖持久化内部实现。
+
+## 会话源
+
+按名称注册的会话源，用于列出、搜索、检查并订阅会话；联邦用它把远端会话与本地会话放在同一份列表里。
+
+| 包 | 职责 | ctx 键 |
+|---|---|---|
+| [`session-source/`](session-source/README.md) | Service Definition 与多源注册表 | `ctx.sessionSources` |
+| [`session-source-local/`](session-source-local/README.md) | 包装活会话与持久化的本地实现 | 注册到 `ctx.sessionSources` |
+
+远端实现在联邦家族：[`dsh-session-source-federation`](../federation/session-source-federation/README.md)。
 
 ## 持久化
 

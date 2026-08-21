@@ -25,6 +25,12 @@
     },
     {
       "path": "../../session/session-source"
+    },
+    {
+      "path": "../../session/session-source-local"
+    },
+    {
+      "path": "../federation-hub"
     }
   ]
 }

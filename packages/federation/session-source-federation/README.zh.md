@@ -52,4 +52,4 @@
 ## Known Limitations and Deferred Work
 
 - **只读操作** — 远端会话修改操作（fork、delete、rename）递延至后续管理里程碑。
-- **降级回退** — 与 hub 断开连接时，会话列表与搜索将返回降级的缓存视图直至重连成功。
+- **降级回退** — 与 hub 断开连接时，会话列表与搜索将返回降级的缓存视图直至重连成功；实时订阅在收到 `federation/registered` 后从 `lastSeq + 1` 续订。

@@ -11,6 +11,7 @@
    - `/federation/connect`：Pod 接入端点。通过 per-pod Bearer token 校验鉴权，注册 pod 元数据，并维持周期性心跳应答。
    - `/federation/subagent`：委派执行端点。接收来自远程委派方（如 [`dsh-subagent-remote`](../../subagent/subagent-remote/README.md)）的 `subagent/start` 消息，将执行路由至指定或在线的可用 pod，实时转发流式文本分块，并同步中断信号。
 3. **心跳与保活管理：** 监测 pod 心跳；在超过可配置的 `heartbeatTimeoutMs` 未收到心跳时将 pod 标记为 `offline`，并以明确错误原因结算所有在途委派。
+4. **只读会话线：** 已认证的 pod 可通过 `ctx.sessionSources` 列出、搜索、检查并订阅 hub 会话。插件需要该服务；bundle 同时挂载 `dsh-session-source` 与 `dsh-session-source-local`。未认证的升级一律拒绝。
 
 ## 模型体验
 

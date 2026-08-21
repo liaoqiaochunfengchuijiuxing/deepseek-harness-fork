@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, WebSocket } from 'ws'
@@ -8,14 +8,8 @@ import { SessionSourcesService } from '@deepseek-ai/dsh-session-source'
 import {
   FederationSessionSource,
   apply,
+  rawDataToString,
 } from '../src/index.ts'
-
-function rawDataToString(data: WebSocket.RawData): string {
-  if (typeof data === 'string') return data
-  if (Buffer.isBuffer(data)) return data.toString('utf8')
-  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
-  return Buffer.from(data).toString('utf8')
-}
 
 describe('FederationSessionSource', () => {
   let server: http.Server
@@ -38,15 +32,37 @@ describe('FederationSessionSource', () => {
           const parsed = JSON.parse(rawDataToString(data)) as Record<string, unknown>
           lastReceivedMessage = parsed
 
-          if (parsed.type === 'session/list') {
+          if (parsed.type === 'federation/register') {
+            ws.send(JSON.stringify({
+              type: 'federation/registered',
+              podId: parsed.podId,
+              hubVersion: '0.1.0',
+            }))
+          } else if (parsed.type === 'session/list') {
+            if (parsed.cwd === '/hang') return
             ws.send(JSON.stringify({
               type: 'session/list-result',
               requestId: parsed.requestId,
-              sessions: [
-                { id: 'sess-remote-1', title: 'Remote Session 1', createdAt: 1000, updatedAt: 1000 },
-              ],
+              sessions: parsed.cwd === '/bad-sessions'
+                ? 'nope'
+                : [
+                  {
+                    id: 'sess-remote-1',
+                    title: 'Remote Session 1',
+                    createdAt: 1000,
+                    updatedAt: 1000,
+                    cwd: '/workspace/app',
+                  },
+                  {
+                    id: 'sess-no-title',
+                    createdAt: 1000,
+                    updatedAt: 1000,
+                    cwd: '/workspace/app',
+                  },
+                ],
             }))
           } else if (parsed.type === 'session/get') {
+            if (parsed.sessionId === 'hang') return
             ws.send(JSON.stringify({
               type: 'session/get-result',
               requestId: parsed.requestId,
@@ -56,12 +72,21 @@ describe('FederationSessionSource', () => {
               },
             }))
           } else if (parsed.type === 'session/search') {
+            if (parsed.query === 'hang') return
             ws.send(JSON.stringify({
               type: 'session/search-result',
               requestId: parsed.requestId,
-              sessions: [
-                { id: 'sess-remote-1', title: 'Remote Session 1', createdAt: 1000, updatedAt: 1000 },
-              ],
+              sessions: parsed.query === 'bad-sessions'
+                ? 'nope'
+                : [
+                  {
+                    id: 'sess-remote-1',
+                    title: 'Remote Session 1',
+                    createdAt: 1000,
+                    updatedAt: 1000,
+                    cwd: '/workspace/app',
+                  },
+                ],
             }))
           }
         } catch {
@@ -79,6 +104,13 @@ describe('FederationSessionSource', () => {
   })
 
   afterEach(async () => {
+    wss.clients.forEach((c) => {
+      try {
+        c.terminate()
+      } catch {
+        // ignore
+      }
+    })
     wss.close()
     await new Promise<void>((resolve) => {
       server.close(() => { resolve() })
@@ -123,16 +155,16 @@ describe('FederationSessionSource', () => {
     })
 
     source.start()
-
-    // Wait for connection
-    await new Promise((r) => { setTimeout(r, 50) })
-    expect(source.online).toBe(true)
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
 
     // Test listSessions
     const sessions = await source.listSessions()
-    expect(sessions).toHaveLength(1)
-    expect(sessions[0]?.id).toBe('sess-remote-1')
+    expect(sessions.some(s => s.id === 'sess-remote-1')).toBe(true)
+    expect(sessions.some(s => s.id === 'sess-no-title')).toBe(true)
     expect(sessions[0]?.sourceId).toBe('hub-live')
+    expect(sessions[0]?.nodeKind).toBe('remote')
 
     // Test getSession
     const inspection = await source.getSession('sess-remote-1' as SessionId)
@@ -143,6 +175,11 @@ describe('FederationSessionSource', () => {
     const searched = await source.searchSessions({ query: 'Remote' })
     expect(searched).toHaveLength(1)
     expect(searched[0]?.id).toBe('sess-remote-1')
+    expect(searched[0]?.nodeKind).toBe('remote')
+    expect((await source.searchSessions({ cwd: '/workspace/app' }))[0]?.id).toBe('sess-remote-1')
+    expect((await source.searchSessions({ query: 'Remote', limit: 1 }))[0]?.id).toBe('sess-remote-1')
+    expect(await source.listSessions({ cwd: '/bad-sessions' })).toEqual([])
+    expect(await source.searchSessions({ query: 'bad-sessions' })).toEqual([])
 
     source.dispose()
     expect(source.online).toBe(false)
@@ -155,7 +192,9 @@ describe('FederationSessionSource', () => {
     })
 
     source.start()
-    await new Promise((r) => { setTimeout(r, 50) })
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
 
     const receivedEvents: unknown[] = []
     const unsubscribe = await source.subscribeEvents(
@@ -165,11 +204,11 @@ describe('FederationSessionSource', () => {
       },
     )
 
-    await new Promise((r) => { setTimeout(r, 50) })
-    expect(lastReceivedMessage?.type).toBe('session/subscribe')
+    await vi.waitFor(() => {
+      expect(lastReceivedMessage?.type).toBe('session/subscribe')
+    })
     const subId = String(lastReceivedMessage?.subscriptionId)
 
-    // Server sends stream event
     serverWs?.send(JSON.stringify({
       type: 'session/stream-event',
       subscriptionId: subId,
@@ -177,14 +216,15 @@ describe('FederationSessionSource', () => {
       event: { seq: 1, type: 'user/message', content: 'Hi' },
     }))
 
-    await new Promise((r) => { setTimeout(r, 50) })
-    expect(receivedEvents).toHaveLength(1)
+    await vi.waitFor(() => {
+      expect(receivedEvents).toHaveLength(1)
+    })
     expect((receivedEvents[0] as { seq: number }).seq).toBe(1)
 
-    // Unsubscribe
     unsubscribe()
-    await new Promise((r) => { setTimeout(r, 50) })
-    expect(lastReceivedMessage?.type).toBe('session/unsubscribe')
+    await vi.waitFor(() => {
+      expect(lastReceivedMessage?.type).toBe('session/unsubscribe')
+    })
 
     source.dispose()
   })
@@ -204,5 +244,216 @@ describe('FederationSessionSource', () => {
     expect(registeredSource?.kind).toBe('remote')
 
     await ctx.fiber.dispose()
+  })
+
+  it('uses tokenEnv, ignores bad frames, times out hung requests, and degrades from cache', async () => {
+    process.env.DSH_TEST_FED_TOKEN = 'env-token'
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      tokenEnv: 'DSH_TEST_FED_TOKEN',
+      sourceId: 'hub-env',
+      requestTimeoutMs: 40,
+      reconnectDelayMs: 20,
+    })
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+
+    await source.listSessions({ cwd: '/workspace/app', limit: 1 })
+    const socket = (source as unknown as { ws?: WebSocket }).ws
+    const originalSend = socket?.send.bind(socket)
+    if (socket) {
+      socket.send = () => {
+        throw new Error('send failed')
+      }
+    }
+    expect(await source.listSessions()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ isDegraded: true })]),
+    )
+    if (socket && originalSend) {
+      socket.send = originalSend
+    }
+
+    const unsubOffline = await source.subscribeEvents('sess-remote-1' as SessionId, () => {}, 1)
+
+    serverWs?.send('{')
+    serverWs?.send('5')
+    serverWs?.send(JSON.stringify({ noType: true }))
+    serverWs?.send(JSON.stringify({ type: 'unknown/type' }))
+    serverWs?.send(JSON.stringify({ type: 'session/list-result', requestId: 1, sessions: 'nope' }))
+    serverWs?.send(JSON.stringify({ type: 'session/get-result', requestId: 1 }))
+    serverWs?.send(JSON.stringify({ type: 'session/search-result', requestId: 1, sessions: 'nope' }))
+    serverWs?.send(JSON.stringify({ type: 'session/list-result', requestId: 'missing', sessions: [] }))
+    serverWs?.send(JSON.stringify({ type: 'session/stream-event', subscriptionId: 1, event: { seq: 9 } }))
+    serverWs?.send(JSON.stringify({ type: 'session/stream-event', subscriptionId: 'nope', event: { seq: 9 } }))
+    serverWs?.send(JSON.stringify({ type: 'session/stream-event', subscriptionId: 'nope' }))
+
+    const hungList = await source.listSessions({ cwd: '/hang' })
+    expect(hungList.every(s => s.isDegraded)).toBe(true)
+
+    expect(await source.getSession('hang' as SessionId)).toBeUndefined()
+    const hungSearch = await source.searchSessions({ query: 'hang' })
+    expect(hungSearch.every(s => s.isDegraded)).toBe(true)
+
+    const inFlight = source.getSession('hang' as SessionId)
+    unsubOffline()
+    source.dispose()
+    await inFlight
+    expect(source.online).toBe(false)
+    expect(await source.listSessions({ cwd: '/workspace/app', limit: 1 })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'sess-remote-1', isDegraded: true })]),
+    )
+    expect(await source.listSessions({ cwd: '/missing', limit: 1 })).toEqual([])
+    expect(await source.getSession('sess-remote-1' as SessionId)).toBeUndefined()
+    expect(await source.searchSessions({ query: 'remote', cwd: '/workspace/app', limit: 1 })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'sess-remote-1', isDegraded: true })]),
+    )
+    expect(await source.searchSessions({ query: 'sess-remote-1' })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'sess-remote-1', isDegraded: true })]),
+    )
+    expect(await source.searchSessions({ query: 'nope', cwd: '/missing' })).toEqual([])
+    delete process.env.DSH_TEST_FED_TOKEN
+  })
+
+  it('resubscribes after reconnect and clears a reconnect timer on dispose', async () => {
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      requestTimeoutMs: 200,
+      reconnectDelayMs: 80,
+    })
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+
+    await source.subscribeEvents('sess-remote-1' as SessionId, () => {}, 2)
+    await source.subscribeEvents('sess-remote-1' as SessionId, () => {})
+
+    lastReceivedMessage = undefined
+    serverWs?.close()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(false)
+    })
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+    await vi.waitFor(() => {
+      expect(lastReceivedMessage?.type).toBe('session/subscribe')
+    })
+
+    ;(source as unknown as { ws?: WebSocket }).ws?.close()
+    await new Promise(r => setTimeout(r, 5))
+    source.dispose()
+  })
+
+  it('drops a stale open, skips reconnect when disabled, and fails send when the socket is not open', async () => {
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    })
+    source.start()
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+
+    const socket = (source as unknown as { ws?: WebSocket }).ws
+    expect(socket).toBeDefined()
+    let checks = 0
+    Object.defineProperty(socket, 'readyState', {
+      configurable: true,
+      get: () => {
+        checks += 1
+        return checks === 1 ? 1 : 0
+      },
+    })
+    expect(await source.listSessions()).toEqual([])
+
+    const noReconnect = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    })
+    noReconnect.start()
+    await vi.waitFor(() => {
+      expect(noReconnect.online).toBe(true)
+    })
+    ;(noReconnect as unknown as { ws?: WebSocket }).ws?.close()
+    await vi.waitFor(() => {
+      expect(noReconnect.online).toBe(false)
+    })
+    const errSource = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+      autoReconnect: false,
+    })
+    errSource.start()
+    await vi.waitFor(() => {
+      expect(errSource.online).toBe(true)
+    })
+    ;(errSource as unknown as { ws?: WebSocket }).ws?.emit('error', new Error('socket error'))
+    await vi.waitFor(() => {
+      expect(errSource.online).toBe(false)
+    })
+    errSource.dispose()
+    noReconnect.dispose()
+    source.dispose()
+  })
+
+  it('uses the default reconnect delay and skips a second reconnect while one is pending', async () => {
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}`,
+    })
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+    ;(source as unknown as { ws?: WebSocket }).ws?.close()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(false)
+    })
+    source.start()
+    await vi.waitFor(() => {
+      expect(source.online).toBe(true)
+    })
+    ;(source as unknown as { ws?: WebSocket }).ws?.close()
+    await new Promise(r => setTimeout(r, 5))
+    source.dispose()
+  })
+
+  it('does not connect after dispose and ignores a thrown WebSocket constructor', () => {
+    const source = new FederationSessionSource({
+      endpoint: 'not-a-valid-url',
+      autoReconnect: false,
+    })
+    source.dispose()
+    source.start()
+    expect(source.online).toBe(false)
+
+    const exploding = new FederationSessionSource({
+      endpoint: 'not-a-valid-url',
+      token: 'x',
+      autoReconnect: false,
+    })
+    exploding.start()
+    expect(exploding.online).toBe(false)
+    exploding.dispose()
+  })
+
+  it('decodes every WebSocket raw data form', () => {
+    expect(rawDataToString('abc')).toBe('abc')
+    expect(rawDataToString(Buffer.from('abc'))).toBe('abc')
+    expect(rawDataToString([Buffer.from('a'), Buffer.from('bc')])).toBe('abc')
+    expect(rawDataToString(new Uint8Array(Buffer.from('abc')).buffer as unknown as WebSocket.RawData)).toBe('abc')
+  })
+
+  it('subscribes while offline and searches the degraded cache without a query', async () => {
+    const source = new FederationSessionSource({
+      endpoint: `ws://127.0.0.1:${port}/unused`,
+      autoReconnect: false,
+    })
+    const stop = await source.subscribeEvents('sess-offline' as SessionId, () => {}, 1)
+    stop()
+    expect(await source.searchSessions({})).toEqual([])
+    source.dispose()
   })
 })

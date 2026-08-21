@@ -73,22 +73,26 @@ The delegation wire reuses the subagent vocabulary (start, message, stop reasons
 
 Workspace files are not carried by session sync. Work spans nodes through a shared git remote (the hub can host it); a session resumed without its workspace is conversation continuity, not work continuity, and the UI says so.
 
-## Package inventory (planned)
+## Package inventory
 
 | Package | Side | Role |
 |---|---|---|
 | `dsh-federation-hub` | hub | pod registry, relay, lease table, delegation endpoint, management-contract exposure |
 | `dsh-federation-client` | pod | dial-out connection, capability declaration, delegation execution, session upload |
 | `dsh-subagent-remote` | both | the `ctx.subagents` remote provider (one wire, all delegation directions) |
-| `dsh-session-source-federation` | pod | remote session source + UI aggregation over `ctx.sessionSources` (working name) |
-| profile additions | both | `federation` (hub), `pod-cloud` / `pod-local` compositions |
+| `dsh-session-source` | both | `ctx.sessionSources` Service Definition and multi-source registry |
+| `dsh-session-source-local` | both | local SessionSource wrapping live sessions and persistence |
+| `dsh-session-source-federation` | pod | remote SessionSource over the pod-hub connection |
+| profile additions | both | `federation` (hub = base + web-app + federation-hub); pod = existing profile + federation-client |
 
 ## Phasing
 
-- v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser. Both everyday directions (cloud drives pod, pod commands cloud) usable.
-- v1: read-level federation session source - native listing, search, live rendering of remote sessions on a pod.
-- v2: command level - `remote_send`, approval and question routing back to the commanding pod.
-- v3: manage and takeover - fork-to-local, lease handoff, bidirectional roaming.
+v0 and v1 are in the tree; v2–v4 remain.
+
+- v0: hub with registry, dial-out connections, and `dsh-subagent-remote` server endpoint; pod client plugin; hub delegates to pods; pods reach hub sessions by browser.
+- v1: read-level federation session source — native listing, search, live rendering of remote sessions on a pod, with source badges and generic-card fallback for unknown node kinds.
+- v2: command level — `remote_send`, approval and question routing back to the commanding pod.
+- v3: manage and takeover — fork-to-local, lease handoff, bidirectional roaming.
 - v4: peer relay, optional capability-server granularity (remote `ctx.fs`/`ctx.subprocess` providers, E2B-shaped), direct pod-to-pod transport.
 
 ## Alternatives considered
@@ -109,12 +113,18 @@ Workspace files are not carried by session sync. Work spans nodes through a shar
 
 ## Consequences
 
-- Two machines and a hub deployment: the hub's UI lists both pods with live presence; a hub agent's `tool_subagent` call with the remote provider completes work on a pod, returns a structured result and usage, and survives a mid-run pod disconnect with a mapped stop reason.
-- A browser on any device opens a hub-owned session and sees streaming output and multi-tab consistency, over an authenticated channel, with no unauthenticated port.
-- On a pod, remote sessions appear in the local session list with source badges; opening one renders it with local renderers; an unknown node kind degrades to a generic card rather than an error.
-- A command sent from a pod to a hub-owned session reaches that session's inbox; an approval triggered by that session appears on the commanding pod and nowhere silently auto-approves.
-- A session forked to a pod resumes with identical derived messages; attempting to resume a session whose writer lease is still held by another live node fails with a stated reason.
-- No node ever receives another node's credential material; delegation results carry only task output and usage.
+v0 and v1 are in the tree:
+
+- The hub registry lists pods with live presence. A remote subagent run returns a structured result and usage; a mid-run disconnect maps to a stop reason. Credentials never cross nodes; delegation results carry task output and usage only.
+- Hub-owned sessions are reachable over the authenticated pod connection and the hub's own web profile. Unauthenticated upgrades are refused.
+- On a pod, remote sessions appear in `ctx.sessionSources` listings with source identity; disconnect marks them degraded and reconnect resumes subscriptions from the last seq. Opening a remote session uses local renderers; unknown conversation node kinds keep the existing generic card.
+
+Still out of tree: command-level `remote_send` and approval routing (v2); fork-to-local and writer leases (v3); peer relay (v4).
+
+## Testing
+
+- M1: `packages/federation/federation-hub/tests/federation-e2e.spec.ts` boots a hub and pods over real WebSockets; `packages/subagent/subagent-remote/tests/subagent-remote.spec.ts` maps stop reasons against a mock endpoint.
+- M2: `packages/federation/session-source-federation/tests/federation-e2e-m2.spec.ts` lists, inspects, searches, streams, degrades, and resumes a hub session from a pod. Local-source equivalence is in `packages/session/session-source-local/tests/session-source-local.spec.ts`. Source badges and unknown-node generic cards are in the client UI unit tests (`packages/client/ui-workspace/tests/rows.client.spec.tsx`, `packages/client/ui-conversation/tests/chat-branch-tails.client.spec.tsx`).
 
 ## Risks
 

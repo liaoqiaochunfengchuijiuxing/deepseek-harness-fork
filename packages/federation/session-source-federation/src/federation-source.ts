@@ -30,7 +30,12 @@ interface ActiveSubscription {
   lastSeq: number | undefined
 }
 
-function rawDataToString(data: WebSocket.RawData): string {
+/**
+ * Convert raw WebSocket data to a UTF-8 string.
+ * @param data - Raw data buffer from WebSocket.
+ * @returns UTF-8 decoded string.
+ */
+export function rawDataToString(data: WebSocket.RawData | string): string {
   if (typeof data === 'string') return data
   if (Buffer.isBuffer(data)) return data.toString('utf8')
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
@@ -78,7 +83,6 @@ export class FederationSessionSource implements SessionSource {
    * Start the outbound connection to the federation hub.
    */
   start(): void {
-    if (this.isDisposed) return
     this.connect()
   }
 
@@ -122,32 +126,26 @@ export class FederationSessionSource implements SessionSource {
   private connect(): void {
     if (this.isDisposed) return
 
-    let endpointUrl = this.config.endpoint
-    const token = this.resolveToken()
-    if (token) {
-      const url = new URL(endpointUrl)
-      url.searchParams.set('token', token)
-      endpointUrl = url.toString()
-    }
-
     try {
+      let endpointUrl = this.config.endpoint
+      const token = this.resolveToken()
+      if (token) {
+        const url = new URL(endpointUrl)
+        url.searchParams.set('token', token)
+        endpointUrl = url.toString()
+      }
+
       const ws = new WebSocket(endpointUrl)
       this.ws = ws
 
       ws.on('open', () => {
         if (this.ws !== ws) return
-        this.isOnline = true
-
-        // Re-subscribe all active subscriptions with seq resumption
-        for (const sub of this.activeSubscriptions.values()) {
-          const fromSeq = sub.lastSeq !== undefined ? sub.lastSeq + 1 : undefined
-          this.sendWireMessage({
-            type: 'session/subscribe',
-            subscriptionId: sub.subscriptionId,
-            sessionId: sub.sessionId,
-            ...fromSeq !== undefined ? { fromSeq } : {},
-          })
-        }
+        this.sendWireMessage({
+          type: 'federation/register',
+          podId: `session-source-${this.id}-${randomUUID()}`,
+          name: this.name,
+          capabilities: {},
+        })
       })
 
       ws.on('message', (data: WebSocket.RawData) => {
@@ -209,6 +207,20 @@ export class FederationSessionSource implements SessionSource {
 
   private handleMessage(msg: { type: string; [key: string]: unknown }): void {
     switch (msg.type) {
+      case 'federation/registered': {
+        this.isOnline = true
+        // Re-subscribe all active subscriptions with seq resumption
+        for (const sub of this.activeSubscriptions.values()) {
+          const fromSeq = sub.lastSeq !== undefined ? sub.lastSeq + 1 : undefined
+          this.sendWireMessage({
+            type: 'session/subscribe',
+            subscriptionId: sub.subscriptionId,
+            sessionId: sub.sessionId,
+            ...fromSeq !== undefined ? { fromSeq } : {},
+          })
+        }
+        break
+      }
       case 'session/list-result': {
         const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
         const req = this.pendingRequests.get(requestId)
@@ -216,7 +228,7 @@ export class FederationSessionSource implements SessionSource {
           clearTimeout(req.timer)
           this.pendingRequests.delete(requestId)
           const sessions = Array.isArray(msg.sessions) ? msg.sessions as SessionSummary[] : []
-          this.cachedSummaries = sessions.map(s => ({ ...s, sourceId: this.id }))
+          this.cachedSummaries = this.stampRemote(sessions)
           req.resolve(this.cachedSummaries)
         }
         break
@@ -238,7 +250,7 @@ export class FederationSessionSource implements SessionSource {
           clearTimeout(req.timer)
           this.pendingRequests.delete(requestId)
           const sessions = Array.isArray(msg.sessions) ? msg.sessions as SessionSummary[] : []
-          req.resolve(sessions.map(s => ({ ...s, sourceId: this.id })))
+          req.resolve(this.stampRemote(sessions))
         }
         break
       }
@@ -255,6 +267,16 @@ export class FederationSessionSource implements SessionSource {
       default:
         break
     }
+  }
+
+  /** Stamp this source's identity onto hub-supplied summaries. */
+  private stampRemote(sessions: SessionSummary[]): SessionSummary[] {
+    return sessions.map(s => ({
+      ...s,
+      sourceId: this.id,
+      sourceName: this.name,
+      nodeKind: 'remote',
+    }))
   }
 
   private requestWithTimeout<T>(type: string, payload: Record<string, unknown>): Promise<T> {
@@ -348,9 +370,7 @@ export class FederationSessionSource implements SessionSource {
       let results = this.cachedSummaries.map(s => ({ ...s, isDegraded: true }))
       if (options.query) {
         const q = options.query.toLowerCase()
-        results = results.filter(s =>
-          (s.title?.toLowerCase().includes(q) ?? false) || s.id.toLowerCase().includes(q),
-        )
+        results = results.filter(s => `${s.title ?? ''} ${s.id}`.toLowerCase().includes(q))
       }
       if (options.cwd !== undefined) {
         results = results.filter(s => s.cwd === options.cwd)

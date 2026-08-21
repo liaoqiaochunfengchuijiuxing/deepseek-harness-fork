@@ -180,6 +180,9 @@ importers:
       '@deepseek-ai/dsh-cordis-client-runner':
         specifier: workspace:^
         version: link:../../packages/extensions/cordis-client-runner
+      '@deepseek-ai/dsh-federation-hub':
+        specifier: workspace:^
+        version: link:../../packages/federation/federation-hub
       '@deepseek-ai/dsh-fs-local':
         specifier: workspace:^
         version: link:../../packages/fs/fs-local
@@ -4341,6 +4344,15 @@ importers:
 
   packages/federation/federation-client:
     dependencies:
+      '@deepseek-ai/dsh-session-source':
+        specifier: workspace:^
+        version: link:../../session/session-source
+      '@deepseek-ai/dsh-session-source-federation':
+        specifier: workspace:^
+        version: link:../session-source-federation
+      '@deepseek-ai/dsh-session-source-local':
+        specifier: workspace:^
+        version: link:../../session/session-source-local
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
@@ -4369,6 +4381,12 @@ importers:
 
   packages/federation/federation-hub:
     dependencies:
+      '@deepseek-ai/dsh-session-source':
+        specifier: workspace:^
+        version: link:../../session/session-source
+      '@deepseek-ai/dsh-session-source-local':
+        specifier: workspace:^
+        version: link:../../session/session-source-local
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
@@ -4388,9 +4406,46 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: workspace:^
         version: link:../../llm/llm
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
       '@deepseek-ai/dsh-subagent':
         specifier: workspace:^
         version: link:../../subagent/subagent
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+
+  packages/federation/session-source-federation:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: workspace:^
+        version: link:../../../vendor/loader
+      '@deepseek-ai/dsh-federation-hub':
+        specifier: workspace:^
+        version: link:../federation-hub
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-session-source':
+        specifier: workspace:^
+        version: link:../../session/session-source
+      '@deepseek-ai/dsh-session-source-local':
+        specifier: workspace:^
+        version: link:../../session/session-source-local
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -6471,6 +6526,53 @@ importers:
       '@deepseek-ai/dsh-storage-domain':
         specifier: workspace:^
         version: link:../../storage/storage-domain
+
+  packages/session/session-source:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: workspace:^
+        version: link:../../../vendor/loader
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+
+  packages/session/session-source-local:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: link:../../../vendor/schemastery
+        version: link:../../../vendor/schemastery
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/cordis-plugin-loader':
+        specifier: workspace:^
+        version: link:../../../vendor/loader
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-session':
+        specifier: workspace:^
+        version: link:../../core/session
+      '@deepseek-ai/dsh-session-persistence':
+        specifier: workspace:^
+        version: link:../session-persistence
+      '@deepseek-ai/dsh-session-source':
+        specifier: workspace:^
+        version: link:../session-source
+      '@deepseek-ai/dsh-session-title':
+        specifier: workspace:^
+        version: link:../session-title
 
   packages/session/session-stats:
     dependencies:

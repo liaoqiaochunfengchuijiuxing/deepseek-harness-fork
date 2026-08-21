@@ -11,6 +11,7 @@ Central control-plane service plugin for multi-node DeepSeek Harness federation.
    - `/federation/connect`: Pod connection endpoint. Authenticates incoming connections via per-pod Bearer tokens, registers pod metadata, and tracks periodic heartbeats.
    - `/federation/subagent`: Delegation endpoint. Accepts `subagent/start` messages from remote delegators (e.g. [`dsh-subagent-remote`](../../subagent/subagent-remote/README.md)), routes runs to designated or available online pods, streams chunks back, and forwards abort signals.
 3. **Heartbeat & Liveness Management:** Monitors pod heartbeats; marks unresponsive pods `offline` after configurable `heartbeatTimeoutMs` and cancels in-flight delegations directed to unreachable pods with explicit error reasons.
+4. **Read-only session wire:** Authenticated pods may list, search, inspect, and subscribe to hub sessions through `ctx.sessionSources`. The plugin requires that service; the bundle mounts `dsh-session-source` and `dsh-session-source-local` beside it. Unauthenticated upgrades are refused.
 
 ## Model Experience
 

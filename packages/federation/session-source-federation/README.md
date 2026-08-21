@@ -52,4 +52,4 @@ None. Remote session source operations do not alter model request prefixes or pr
 ## Known Limitations and Deferred Work
 
 - **Read-only operations** — remote session mutation (fork, delete, rename) is deferred to later management milestones.
-- **Degraded fallback** — when disconnected from the hub, session listings and searches return degraded cached views until reconnection.
+- **Degraded fallback** — when disconnected from the hub, session listings and searches return degraded cached views until reconnection; live subscriptions resume from `lastSeq + 1` after `federation/registered`.

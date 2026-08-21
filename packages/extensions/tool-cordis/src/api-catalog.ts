@@ -1508,6 +1508,55 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'sessionSources',
+    summary: 'Service registry and aggregator for session sources across local and federation nodes.',
+    description: 'Service registry and aggregator for session sources across local and federation nodes.',
+    methods: [
+      {
+        signature: 'registerSource(source: SessionSource): () => void',
+        description: 'Register a session source provider into the registry.',
+        parameters: [{ name: 'source', description: 'the session source instance to register.' }],
+        returns: 'a disposer function that unregisters the source.',
+      },
+      {
+        signature: 'getSource(id: string): SessionSource | undefined',
+        description: 'Get a registered session source by its unique identifier.',
+        parameters: [{ name: 'id', description: 'source identifier (e.g. \'local\', \'hub\').' }],
+        returns: 'the session source or undefined.',
+      },
+      {
+        signature: 'listSources(): SessionSource[]',
+        description: 'List all currently registered session sources.',
+        parameters: [],
+        returns: 'array of registered session sources.',
+      },
+      {
+        signature: 'async listAllSessions(options?: { cwd?: string; limit?: number }): Promise<SessionSummary[]>',
+        description: 'Aggregate and list sessions across all registered session sources. Results are sorted newest-first by updatedAt/createdAt timestamp.',
+        parameters: [{ name: 'options', description: 'optional directory filter and result limit.' }],
+        returns: 'combined session summaries across all active sources.',
+      },
+      {
+        signature: 'async searchAllSessions(filter: SessionSearchFilter): Promise<SessionSummary[]>',
+        description: 'Search sessions across all sources supporting search.',
+        parameters: [{ name: 'filter', description: 'search filter parameters.' }],
+        returns: 'combined matching session summaries.',
+      },
+      {
+        signature: 'async getSession( sessionId: SessionId, sourceId?: string, ): Promise<{ source: SessionSource; session: SessionInspectionResult } | undefined>',
+        description: 'Look up and load a session across registered sources.',
+        parameters: [{ name: 'sessionId', description: 'the target session identifier.' }, { name: 'sourceId', description: 'optional source identifier hint to narrow search.' }],
+        returns: 'object containing the finding source and the inspection result, or undefined.',
+      },
+      {
+        signature: 'async subscribeEvents( sessionId: SessionId, onEvent: (event: SessionEvent) => void, fromSeq?: number, sourceId?: string, ): Promise<() => void>',
+        description: 'Subscribe to live events for a session, locating its source automatically.',
+        parameters: [{ name: 'sessionId', description: 'target session identifier.' }, { name: 'onEvent', description: 'callback for incoming session events.' }, { name: 'fromSeq', description: 'optional starting sequence number.' }, { name: 'sourceId', description: 'optional specific source identifier.' }],
+        returns: 'disposer to unsubscribe.',
+      },
+    ],
+  },
+  {
     key: 'sessionTelemetry',
     summary: 'Loadable form of the backend contract: one implementation per context — the cordis `Service` registration under the `telemetry` key throws on a duplicate, cordis\' standard behavior.',
     description: 'Loadable form of the backend contract: one implementation per context — the cordis `Service` registration under the `telemetry` key throws on a duplicate, cordis\' standard behavior. A backend composes a SessionTelemetryCoordinator in its constructor to install the capture side.',
@@ -3277,12 +3326,48 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    name: string;\n    capabilities?: PodCapabilities;\n}',
   },
   {
+    name: 'FederationSessionGetMessage',
+    declaration: 'export interface FederationSessionGetMessage {\n    type: \'session/get\';\n    requestId: string;\n    sessionId: SessionId;\n}',
+  },
+  {
+    name: 'FederationSessionGetResultMessage',
+    declaration: 'export interface FederationSessionGetResultMessage {\n    type: \'session/get-result\';\n    requestId: string;\n    session?: SessionInspectionResult;\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionListMessage',
+    declaration: 'export interface FederationSessionListMessage {\n    type: \'session/list\';\n    requestId: string;\n    cwd?: string;\n    limit?: number;\n}',
+  },
+  {
+    name: 'FederationSessionListResultMessage',
+    declaration: 'export interface FederationSessionListResultMessage {\n    type: \'session/list-result\';\n    requestId: string;\n    sessions: SessionSummary[];\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionSearchMessage',
+    declaration: 'export interface FederationSessionSearchMessage {\n    type: \'session/search\';\n    requestId: string;\n    query?: string;\n    cwd?: string;\n    limit?: number;\n}',
+  },
+  {
+    name: 'FederationSessionSearchResultMessage',
+    declaration: 'export interface FederationSessionSearchResultMessage {\n    type: \'session/search-result\';\n    requestId: string;\n    sessions: SessionSummary[];\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionStreamEventMessage',
+    declaration: 'export interface FederationSessionStreamEventMessage {\n    type: \'session/stream-event\';\n    subscriptionId: string;\n    sessionId: SessionId;\n    event: SessionEvent;\n}',
+  },
+  {
+    name: 'FederationSessionSubscribeMessage',
+    declaration: 'export interface FederationSessionSubscribeMessage {\n    type: \'session/subscribe\';\n    subscriptionId: string;\n    sessionId: SessionId;\n    fromSeq?: number;\n}',
+  },
+  {
+    name: 'FederationSessionUnsubscribeMessage',
+    declaration: 'export interface FederationSessionUnsubscribeMessage {\n    type: \'session/unsubscribe\';\n    subscriptionId: string;\n}',
+  },
+  {
     name: 'FederationTokenRole',
     declaration: 'export type FederationTokenRole = \'read\' | \'command\' | \'manage\' | \'takeover\';',
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage;',
   },
   {
     name: 'FileDiff',
@@ -4093,6 +4178,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionInspection {\n    readonly meta: SessionHeader;\n    readonly events: readonly SessionEvent[];\n}',
   },
   {
+    name: 'SessionInspectionResult',
+    declaration: 'export interface SessionInspectionResult {\n    header: SessionHeader;\n    events: readonly SessionEvent[];\n}',
+  },
+  {
     name: 'SessionLineageNode',
     declaration: 'export interface SessionLineageNode {\n    session: SessionRecord;\n    descendants: SessionLineageNode[];\n}',
   },
@@ -4165,6 +4254,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionSearchExecContext {\n    signal?: AbortSignal;\n}',
   },
   {
+    name: 'SessionSearchFilter',
+    declaration: 'export interface SessionSearchFilter {\n    query?: string | undefined;\n    cwd?: string | undefined;\n    limit?: number | undefined;\n}',
+  },
+  {
     name: 'SessionSearchHit',
     declaration: 'export interface SessionSearchHit extends SessionRecord {\n    bestMatch: SessionEventSearchHit;\n}',
   },
@@ -4175,6 +4268,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionSearchRequest',
     declaration: 'export interface SessionSearchRequest {\n    query: string;\n    sessionFilters?: readonly SessionResultFilter[];\n    eventFilters?: readonly SessionEventMetadataFilter[];\n    limit?: number;\n    cursor?: SessionSearchCursor;\n}',
+  },
+  {
+    name: 'SessionSource',
+    declaration: 'export interface SessionSource {\n    readonly id: string;\n    readonly name: string;\n    readonly kind: \'local\' | \'remote\';\n    readonly capabilities: SessionSourceCapabilities;\n    listSessions(options?: {\n        cwd?: string;\n        limit?: number;\n    }): Promise<SessionSummary[]>;\n    getSession(id: SessionId): Promise<SessionInspectionResult | undefined>;\n    searchSessions?(filter: SessionSearchFilter): Promise<SessionSummary[]>;\n    subscribeEvents?(sessionId: SessionId, onEvent: (event: SessionEvent) => void, fromSeq?: number): Promise<() => void>;\n    renameSession?(id: SessionId, title: string): Promise<void>;\n    deleteSession?(id: SessionId): Promise<void>;\n    forkSession?(id: SessionId, targetCwd?: string): Promise<SessionId>;\n}',
+  },
+  {
+    name: 'SessionSourceCapabilities',
+    declaration: 'export interface SessionSourceCapabilities {\n    readonly canWrite: boolean;\n    readonly canFork: boolean;\n    readonly canDelete: boolean;\n    readonly canRename: boolean;\n    readonly canSearch: boolean;\n}',
   },
   {
     name: 'SessionStartSource',

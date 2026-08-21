@@ -1,5 +1,10 @@
-# Federation Hub Profile Bundle: mounts the central federation control-plane service.
+# Federation Hub Profile Bundle: mounts the central federation control-plane
+# service plus the session-source seam it uses to answer pod session reads.
 - insert:
+    - id: session-sources
+      name: '@deepseek-ai/dsh-session-source'
+    - id: session-source-local
+      name: '@deepseek-ai/dsh-session-source-local'
     - id: federation-hub
       name: '@deepseek-ai/dsh-federation-hub'
       config:

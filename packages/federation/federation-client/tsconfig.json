@@ -25,6 +25,15 @@
     },
     {
       "path": "../../subagent/subagent"
+    },
+    {
+      "path": "../../session/session-source"
+    },
+    {
+      "path": "../../session/session-source-local"
+    },
+    {
+      "path": "../session-source-federation"
     }
   ]
 }

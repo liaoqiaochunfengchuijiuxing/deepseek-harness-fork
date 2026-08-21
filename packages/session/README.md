@@ -2,7 +2,18 @@
 
 English | [中文](README.zh.md)
 
-The durable family around `core/session`'s live in-memory service: the persistence seam with its storage backends and checkpoint policy, the projection seam that serves whole log-derived values, log-backed titles, and outbound session telemetry. All **product** packages. `session-query/` remains a sibling group: the read/tool surface is consumed independently of persistence internals.
+The durable family around `core/session`'s live in-memory service: the persistence seam with its storage backends and checkpoint policy, the projection seam that serves whole log-derived values, log-backed titles, outbound session telemetry, and the multi-source session listing seam. All **product** packages. `session-query/` remains a sibling group: the read/tool surface is consumed independently of persistence internals.
+
+## Session sources
+
+Named sources for listing, searching, inspecting, and subscribing to sessions, used by federation to show remote sessions next to local ones.
+
+| Package | Role | ctx key |
+|---|---|---|
+| [`session-source/`](session-source/README.md) | Service Definition and multi-source registry | `ctx.sessionSources` |
+| [`session-source-local/`](session-source-local/README.md) | Local provider wrapping live sessions and persistence | registers on `ctx.sessionSources` |
+
+The remote provider lives with the federation family: [`dsh-session-source-federation`](../federation/session-source-federation/README.md).
 
 ## Persistence
 

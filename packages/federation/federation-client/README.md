@@ -59,5 +59,5 @@ Neutral to the delegating parent. On the pod, local execution follows the normal
 
 ## Known Limitations and Deferred Work
 
-- Interactive multi-turn continuation over the federation client is deferred to milestone M2/M3.
-- Persistent session caching and checkpoint upload to hub is scheduled for milestone M4.
+- Command-level send and approval routing over the pod connection is deferred to M3.
+- Persistent session caching and checkpoint upload to hub is deferred to M4.

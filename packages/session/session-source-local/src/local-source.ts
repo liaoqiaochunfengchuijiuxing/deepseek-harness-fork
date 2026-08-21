@@ -116,7 +116,7 @@ export class LocalSessionSource implements SessionSource {
     const all = await this.listSessions(filter.cwd !== undefined ? { cwd: filter.cwd } : undefined)
     if (!filter.query) return filter.limit !== undefined ? all.slice(0, filter.limit) : all
     const q = filter.query.toLowerCase()
-    const matched = all.filter(s => (s.title !== undefined && s.title.toLowerCase().includes(q)) || s.cwd.toLowerCase().includes(q))
+    const matched = all.filter(s => (s.title ?? '').toLowerCase().includes(q) || s.cwd.toLowerCase().includes(q))
     return filter.limit !== undefined ? matched.slice(0, filter.limit) : matched
   }
 
@@ -139,13 +139,13 @@ export class LocalSessionSource implements SessionSource {
       }
     }
 
-    const listener = (event: SessionEvent): void => {
-      onEvent(event)
-    }
+    const unsubscribe = this.ctx.on('session/event', (session, event) => {
+      if (session.id === sessionId) {
+        onEvent(event)
+      }
+    })
 
-    return Promise.resolve(
-      (live as unknown as { on(event: string, fn: (e: SessionEvent) => void): () => void }).on('session/event', listener),
-    )
+    return Promise.resolve(unsubscribe)
   }
 
   async renameSession(id: SessionId, title: string): Promise<void> {

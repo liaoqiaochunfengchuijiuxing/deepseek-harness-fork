@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { WebSocket } from 'ws'
+import * as SessionSourcePlugin from '@deepseek-ai/dsh-session-source'
+import * as HubPlugin from '../src/index.ts'
 import {
   FederationHubService,
   FederationHubServer,
@@ -505,5 +507,61 @@ describe('FederationHubServer integration', () => {
     expect(streamCallback).toBeUndefined()
 
     podWs.close()
+  })
+})
+
+describe('federation-hub apply', () => {
+  it('starts the server as an effect and stops it on dispose', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionSourcePlugin)
+    await ctx.plugin(HubPlugin, {
+      port: 0,
+      host: '127.0.0.1',
+      token: 'apply-token',
+    })
+    await ctx.fiber.dispose()
+  })
+
+  it('does not log a start failure after dispose', async () => {
+    const start = vi.spyOn(FederationHubServer.prototype, 'start').mockImplementation(async () => {
+      await new Promise(r => setTimeout(r, 30))
+      throw new Error('listen failed')
+    })
+    const ctx = new Context()
+    const error = vi.spyOn(ctx.logger, 'error').mockImplementation(() => undefined)
+    await ctx.plugin(SessionSourcePlugin)
+    await ctx.plugin(HubPlugin, {
+      port: 0,
+      host: '127.0.0.1',
+      token: 'apply-token',
+    })
+    await ctx.fiber.dispose()
+    await new Promise(r => setTimeout(r, 50))
+    expect(error).not.toHaveBeenCalled()
+    start.mockRestore()
+  })
+
+  it('logs when the listening server fails to start', async () => {
+    const holder = new Context()
+    const occupied = new FederationHubServer(new FederationHubService(holder), {
+      port: 0,
+      host: '127.0.0.1',
+      token: 'occupied',
+    })
+    await occupied.start()
+    const ctx = new Context()
+    const error = vi.spyOn(ctx.logger, 'error').mockImplementation(() => undefined)
+    await ctx.plugin(SessionSourcePlugin)
+    await ctx.plugin(HubPlugin, {
+      port: occupied.getPort(),
+      host: '127.0.0.1',
+      token: 'apply-token',
+    })
+    await vi.waitFor(() => {
+      expect(error).toHaveBeenCalled()
+    })
+    await ctx.fiber.dispose()
+    await occupied.stop()
+    await holder.fiber.dispose()
   })
 })

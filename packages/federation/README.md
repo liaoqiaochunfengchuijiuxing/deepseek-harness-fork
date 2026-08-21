@@ -8,5 +8,6 @@ This family implements the hub-and-pod federation capability for DeepSeek Harnes
 |---|---|---|
 | [`federation-hub/`](federation-hub/README.md) | Central control-plane service: pod registry, WS endpoint, authentication, delegation routing | `ctx.federationHub` |
 | [`federation-client/`](federation-client/README.md) | Data-plane client plugin: outbound connection, capability declaration, subagent execution | registers on `ctx.federationClient` |
+| [`session-source-federation/`](session-source-federation/README.md) | Remote session source: list, search, inspect, and subscribe to hub sessions | registers on `ctx.sessionSources` |
 
 Design rationale and topology details are documented in the [hub-and-pod federation Agent Note](../../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.md).

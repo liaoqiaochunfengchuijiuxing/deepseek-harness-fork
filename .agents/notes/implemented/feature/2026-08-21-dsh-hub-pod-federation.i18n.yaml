@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.md
-2026-08-21-dsh-hub-pod-federation.md: d162c15e4eec48ba45842d892ba2d2cad92966bb
-2026-08-21-dsh-hub-pod-federation.zh.md: 3874b6a3c5afe4e676cfc2c6777f17897ce25056
+2026-08-21-dsh-hub-pod-federation.md: 2821ce1988aeebd7589479548c26f34cd2df81bd
+2026-08-21-dsh-hub-pod-federation.zh.md: f3aeceb59b35bcfb67a028b58dbe7fc03ec50f5d

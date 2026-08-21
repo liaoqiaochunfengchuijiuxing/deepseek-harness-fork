@@ -73,22 +73,26 @@ Pod 模式是组合选择（profile），不是独立产品：
 
 会话同步不携带工作区文件。跨节点的工作经由共享 git remote 展开（hub 可以托管）；一个 resume 时没有工作区的会话是会话连续性而不是工作连续性，UI 要如实说明。
 
-## Package inventory (planned)
+## Package inventory
 
 | 包 | 侧 | 角色 |
 |---|---|---|
 | `dsh-federation-hub` | hub | pod 注册表、中继、租约表、委派端点、管理契约暴露 |
 | `dsh-federation-client` | pod | 外拨连接、能力声明、委派执行、会话上传 |
 | `dsh-subagent-remote` | 两侧 | `ctx.subagents` 的 remote provider（一份 wire，全部委派方向） |
-| `dsh-session-source-federation` | pod | 远端会话源 + 基于 `ctx.sessionSources`（工作名）的 UI 聚合 |
-| profile 增补 | 两侧 | `federation`（hub）、`pod-cloud` / `pod-local` 组合 |
+| `dsh-session-source` | 两侧 | `ctx.sessionSources` Service Definition 与多源注册表 |
+| `dsh-session-source-local` | 两侧 | 包装活会话与持久化的本地 SessionSource |
+| `dsh-session-source-federation` | pod | 经 pod-hub 连接的远端 SessionSource |
+| profile 增补 | 两侧 | `federation`（hub = base + web-app + federation-hub）；pod = 既有 profile + federation-client |
 
 ## Phasing
 
-- v0：hub 带注册表、外拨连接和 `dsh-subagent-remote` 服务端端点；pod 客户端插件；hub 委派 pod；pod 用浏览器触达 hub 会话。两个日常方向（云端驱动 pod、pod 指挥云端）都可用。
-- v1：只读级联邦会话源--pod 上原生的远端会话列表、搜索、实时渲染。
-- v2：命令级--`remote_send`、审批与问询路由回指挥 pod。
-- v3：manage 与 takeover--fork-to-local、租约交接、双向漫游。
+v0 与 v1 已在树中；v2–v4 仍待做。
+
+- v0：hub 带注册表、外拨连接和 `dsh-subagent-remote` 服务端端点；pod 客户端插件；hub 委派 pod；pod 用浏览器触达 hub 会话。
+- v1：只读级联邦会话源——pod 上原生的远端会话列表、搜索、实时渲染，带来源徽标，未知节点类型回退既有 generic 卡片。
+- v2：命令级——`remote_send`、审批与问询路由回指挥 pod。
+- v3：manage 与 takeover——fork-to-local、租约交接、双向漫游。
 - v4：peer 中继、可选的 capability-server 粒度（远端 `ctx.fs`/`ctx.subprocess` provider，E2B 形状）、pod 直连传输。
 
 ## Alternatives considered
@@ -109,12 +113,18 @@ Pod 模式是组合选择（profile），不是独立产品：
 
 ## Consequences
 
-- 两台机器加一个 hub 部署：hub 的 UI 列出两个 pod 及实时在线状态；hub agent 的 `tool_subagent` 调用经 remote provider 在 pod 上完成工作、返回结构化结果与用量，并在 pod 中途断连时映射出 stop reason。
-- 任意设备的浏览器经认证通道打开 hub 所属会话，看到流式输出与多标签一致性，无未认证端口。
-- 在 pod 上，远端会话出现在本地会话列表并带来源徽标；打开后用本地渲染器渲染；未知节点类型降级为 generic 卡片而不是报错。
-- 从 pod 发往 hub 会话的命令到达该会话 inbox；该会话触发的审批出现在指挥 pod 上，任何地方都不会静默自动批准。
-- fork 到 pod 的会话 resume 后 derived messages 完全一致；对写权租约仍被另一个活节点持有的会话发起 resume 时，以明确的理由失败。
-- 任何节点都不会收到其他节点的凭证材料；委派结果只携带任务输出与用量。
+v0 与 v1 已在树中：
+
+- hub 注册表列出 pod 及实时在线状态。remote subagent 运行返回结构化结果与用量；中途断连映射为 stop reason。凭证不跨节点；委派结果只携带任务输出与用量。
+- hub 所属会话可经认证的 pod 连接与 hub 自身的 web profile 打开。未认证升级一律拒绝。
+- 在 pod 上，远端会话出现在 `ctx.sessionSources` 列表中并带来源身份；断线标记 degraded，重连后从上次 seq 续订。打开远端会话使用本地渲染器；未知会话节点类型保留既有 generic 卡片。
+
+仍未在树中：命令级 `remote_send` 与审批路由（v2）；fork-to-local 与写者租约（v3）；peer 中继（v4）。
+
+## Testing
+
+- M1：`packages/federation/federation-hub/tests/federation-e2e.spec.ts` 在真实 WebSocket 上启动 hub 与 pod；`packages/subagent/subagent-remote/tests/subagent-remote.spec.ts` 对 mock 端点映射 stop reason。
+- M2：`packages/federation/session-source-federation/tests/federation-e2e-m2.spec.ts` 从 pod 列出、检查、搜索、订阅、降级并恢复一条 hub 会话。本地源等价性在 `packages/session/session-source-local/tests/session-source-local.spec.ts`。来源徽标与未知节点 generic 卡片在 client UI 单测中（`packages/client/ui-workspace/tests/rows.client.spec.tsx`、`packages/client/ui-conversation/tests/chat-branch-tails.client.spec.tsx`）。
 
 ## Risks
 

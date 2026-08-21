@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import InvariantsService from '@deepseek-ai/dsh-invariants'
-import {
+import SessionStore, {
   SESSION_FORMAT_VERSION,
   SessionId,
   type SessionEvent,
@@ -150,5 +150,165 @@ describe('LocalSessionSource', () => {
     expect(forkedLoaded.meta.cwd).toBe('/workspace/forked')
     expect(forkedLoaded.meta.delegationDepth).toBe(1)
     expect(forkedLoaded.events).toHaveLength(2) // turn/start + session/title
+  })
+
+  it('applies list limits, inspect failures, empty-event rename, and fork defaults', async () => {
+    const h1: SessionHeader = {
+      id: SessionId('limit-a'),
+      version: SESSION_FORMAT_VERSION,
+      createdAt: 1000,
+      cwd: '/workspace/app',
+      delegationDepth: 0,
+    }
+    const h2: SessionHeader = {
+      id: SessionId('limit-b'),
+      version: SESSION_FORMAT_VERSION,
+      createdAt: 2000,
+      cwd: '/workspace/app',
+      delegationDepth: 0,
+    }
+    const untitled: SessionHeader = {
+      id: SessionId('no-cwd'),
+      version: SESSION_FORMAT_VERSION,
+      createdAt: 1500,
+      delegationDepth: 0,
+    }
+    await persistence.create(h1)
+    await persistence.create(h2)
+    await persistence.create(untitled)
+
+    const limited = await ctx.sessionSources.listAllSessions({ cwd: '/workspace/app', limit: 1 })
+    expect(limited).toHaveLength(1)
+    expect(limited[0]?.id).toBe(SessionId('limit-b'))
+
+    const queried = await ctx.sessionSources.searchAllSessions({ query: 'workspace/app', limit: 1 })
+    expect(queried).toHaveLength(1)
+
+    const noQueryLimited = await ctx.sessionSources.searchAllSessions({ limit: 1 })
+    expect(noQueryLimited).toHaveLength(1)
+
+    const localSource = ctx.sessionSources.getSource('local') as LocalSessionSource
+    expect(await localSource.getSession(SessionId('absent-session'))).toBeUndefined()
+
+    await localSource.renameSession(SessionId('no-cwd'), 'Untitled')
+    const renamed = await persistence.load(SessionId('no-cwd'))
+    expect(renamed.events.some(e => e.type === 'session/title')).toBe(true)
+
+    const forkedId = await localSource.forkSession(SessionId('no-cwd'))
+    const forked = await persistence.load(forkedId)
+    expect(forked.meta.parentSession).toBe(SessionId('no-cwd'))
+    expect(forked.meta.cwd).toBeUndefined()
+    expect(forked.events.length).toBeGreaterThan(0)
+
+    const emptyId = SessionId('empty-fork')
+    await persistence.create({
+      id: emptyId,
+      version: SESSION_FORMAT_VERSION,
+      createdAt: 3000,
+      cwd: '/workspace/app',
+    })
+    const emptyFork = await localSource.forkSession(emptyId, '/workspace/forked')
+    expect((await persistence.load(emptyFork)).events).toHaveLength(0)
+  })
+})
+
+describe('LocalSessionSource live session store', () => {
+  let ctx: Context
+
+  beforeEach(async () => {
+    ctx = new Context()
+    await ctx.plugin(InvariantsService)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionSourcePlugin)
+    await ctx.plugin(LocalSessionSourcePlugin)
+  })
+
+  afterEach(async () => {
+    await ctx.fiber.dispose()
+  })
+
+  it('lists, inspects, searches, and subscribes without persistence', async () => {
+    ctx.sessions.create(SessionId('no-cwd-live'))
+    const session = ctx.sessions.create(SessionId('live-s1'), {
+      meta: { cwd: process.cwd() },
+    })
+
+    const list = await ctx.sessionSources.listAllSessions()
+    expect(list.some(s => s.id === session.id)).toBe(true)
+    expect(list.find(s => s.id === session.id)?.cwd).toBe(process.cwd())
+
+    const filtered = await ctx.sessionSources.listAllSessions({ cwd: process.cwd() })
+    expect(filtered.some(s => s.id === session.id)).toBe(true)
+
+    const inspected = await ctx.sessionSources.getSession(session.id)
+    expect(inspected?.source.id).toBe('local')
+    expect(inspected?.session.header.id).toBe(session.id)
+    expect(await ctx.sessionSources.getSession(SessionId('missing-live'))).toBeUndefined()
+
+    const searched = await ctx.sessionSources.searchAllSessions({ cwd: process.cwd() })
+    expect(searched.some(s => s.id === session.id)).toBe(true)
+
+    const received: string[] = []
+    const unsubscribe = await ctx.sessionSources.subscribeEvents(session.id, (event) => {
+      received.push(event.type)
+    })
+    session.append('turn/start', { turn: 1 })
+    expect(received).toContain('turn/start')
+    unsubscribe()
+
+    const replayed: string[] = []
+    const stopReplay = await ctx.sessionSources.subscribeEvents(session.id, (event) => {
+      replayed.push(event.type)
+    }, 0)
+    expect(replayed.length).toBeGreaterThan(0)
+    stopReplay()
+
+    const missing = await ctx.sessionSources.subscribeEvents(SessionId('no-such-session'), () => {})
+    missing()
+
+    const localSource = ctx.sessionSources.getSource('local') as LocalSessionSource
+    await localSource.renameSession(session.id, 'ignored-without-persistence')
+    await expect(localSource.forkSession(session.id)).rejects.toThrow('SessionPersistence is not configured')
+
+    ctx.sessions.create(SessionId('live-s2'), { meta: { cwd: process.cwd() } })
+    const limited = await ctx.sessionSources.listAllSessions({ limit: 1 })
+    expect(limited).toHaveLength(1)
+
+    const cwdMiss = await ctx.sessionSources.listAllSessions({ cwd: '/no/such/cwd' })
+    expect(cwdMiss).toEqual([])
+
+    const queried = await ctx.sessionSources.searchAllSessions({
+      query: process.cwd(),
+      limit: 1,
+    })
+    expect(queried.length).toBeLessThanOrEqual(1)
+    const queriedAll = await ctx.sessionSources.searchAllSessions({ query: process.cwd() })
+    expect(queriedAll.length).toBeGreaterThan(0)
+
+    const localLive = ctx.sessionSources.getSource('local') as LocalSessionSource
+    const stopMissing = await localLive.subscribeEvents(SessionId('missing-live'), () => {})
+    stopMissing()
+
+    const other = ctx.sessions.create(SessionId('live-other'), { meta: { cwd: process.cwd() } })
+    const skipped: string[] = []
+    const stopSkip = await ctx.sessionSources.subscribeEvents(session.id, (event) => {
+      skipped.push(event.type)
+    }, 10_000)
+    expect(skipped).toEqual([])
+    other.append('turn/start', { turn: 1 })
+    expect(skipped).toEqual([])
+    stopSkip()
+  })
+
+  it('returns empty results when no session store is mounted', async () => {
+    const empty = new Context()
+    await empty.plugin(InvariantsService)
+    await empty.plugin(SessionSourcePlugin)
+    await empty.plugin(LocalSessionSourcePlugin)
+    expect(await empty.sessionSources.listAllSessions()).toEqual([])
+    expect(await empty.sessionSources.getSession(SessionId('missing'))).toBeUndefined()
+    const stop = await empty.sessionSources.subscribeEvents(SessionId('missing'), () => {})
+    stop()
+    await empty.fiber.dispose()
   })
 })

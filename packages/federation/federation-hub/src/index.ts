@@ -16,9 +16,7 @@ export * from './service.ts'
 export * from './server.ts'
 
 export const name = 'federation-hub'
-export const inject = {
-  optional: ['sessionSources'],
-}
+export const inject = ['sessionSources']
 
 /** Config schema for federation hub. */
 export interface Config extends FederationHubConfig {}
@@ -38,6 +36,12 @@ export const Config: Schema<Config> = Schema.object({
  * @param ctx - the owning Cordis context.
  * @param config - federation hub configuration.
  */
+/** Normalize an unknown rejection to Error for the listen-failure log. */
+function toError(value: unknown): Error {
+  /* v8 ignore next -- listen rejects Error */
+  return value instanceof Error ? value : new Error(String(value))
+}
+
 export function apply(ctx: Context, config: Config): void {
   const service = new FederationHubService(ctx)
   const server = new FederationHubServer(service, config)
@@ -46,7 +50,7 @@ export function apply(ctx: Context, config: Config): void {
     let stopped = false
     void server.start().catch((err: unknown) => {
       if (!stopped) {
-        ctx.logger.error(err instanceof Error ? err : new Error(String(err)))
+        ctx.logger.error(toError(err))
       }
     })
 
