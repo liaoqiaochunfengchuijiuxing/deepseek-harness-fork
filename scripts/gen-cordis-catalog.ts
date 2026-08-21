@@ -88,6 +88,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   sessionReferenceResolver: 'session-reference.md',
   sessionProjectionCache: 'session-projection.md',
   sessionProjections: 'session-projection.md',
+  sessionSources: 'session.md',
   sessions: 'session.md',
   settings: 'settings.md',
   sessionTitle: 'session-title.md',
@@ -516,6 +517,10 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   TypertPackageRecord: 'invariants.md',
   TypertSchemaFilter: 'invariants.md',
   TypertSchemaRecord: 'invariants.md',
+  SessionSource: 'session.md',
+  SessionSummary: 'session.md',
+  SessionSearchFilter: 'session.md',
+  SessionInspectionResult: 'session.md',
 }
 
 /** TypeScript lib and pinned framework types with no repository-owned data page. */

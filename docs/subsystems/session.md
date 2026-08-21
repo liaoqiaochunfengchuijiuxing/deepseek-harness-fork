@@ -752,6 +752,71 @@ Types: [CreateSessionOptions](persistence.md) · [PrepareSessionOptions](persist
 
 Source: [`packages/core/session/src/index.ts:792`](../../packages/core/session/src/index.ts)
 
+<a id="ctxsessionsources--sessionsourcesservice"></a>
+
+### `ctx.sessionSources` — `SessionSourcesService`
+
+Service registry and aggregator for session sources across local and federation nodes.
+
+```ts cordis-catalog
+/**
+ * Register a session source provider into the registry.
+ * @param source - the session source instance to register.
+ * @returns a disposer function that unregisters the source.
+ */
+registerSource(source: SessionSource): () => void
+
+/**
+ * Get a registered session source by its unique identifier.
+ * @param id - source identifier (e.g. 'local', 'hub').
+ * @returns the session source or undefined.
+ */
+getSource(id: string): SessionSource | undefined
+
+/**
+ * List all currently registered session sources.
+ * @returns array of registered session sources.
+ */
+listSources(): SessionSource[]
+
+/**
+ * Aggregate and list sessions across all registered session sources.
+ * Results are sorted newest-first by updatedAt/createdAt timestamp.
+ * @param options - optional directory filter and result limit.
+ * @returns combined session summaries across all active sources.
+ */
+async listAllSessions(options?: { cwd?: string; limit?: number }): Promise<SessionSummary[]>
+
+/**
+ * Search sessions across all sources supporting search.
+ * @param filter - search filter parameters.
+ * @returns combined matching session summaries.
+ */
+async searchAllSessions(filter: SessionSearchFilter): Promise<SessionSummary[]>
+
+/**
+ * Look up and load a session across registered sources.
+ * @param sessionId - the target session identifier.
+ * @param sourceId - optional source identifier hint to narrow search.
+ * @returns object containing the finding source and the inspection result, or undefined.
+ */
+async getSession( sessionId: SessionId, sourceId?: string, ): Promise<{ source: SessionSource; session: SessionInspectionResult } | undefined>
+
+/**
+ * Subscribe to live events for a session, locating its source automatically.
+ * @param sessionId - target session identifier.
+ * @param onEvent - callback for incoming session events.
+ * @param fromSeq - optional starting sequence number.
+ * @param sourceId - optional specific source identifier.
+ * @returns disposer to unsubscribe.
+ */
+async subscribeEvents( sessionId: SessionId, onEvent: (event: SessionEvent) => void, fromSeq?: number, sourceId?: string, ): Promise<() => void>
+```
+
+Types: [SessionId](core.md)
+
+Source: [`packages/session/session-source/src/service.ts:24`](../../packages/session/session-source/src/service.ts)
+
 <a id="session-events"></a>
 
 ### `session/*` events

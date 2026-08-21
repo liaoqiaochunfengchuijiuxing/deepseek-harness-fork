@@ -308,6 +308,8 @@
     { "path": "./packages/lsp/lsp" },
     { "path": "./packages/lsp/lsp-stdio" },
     { "path": "./packages/lsp/tool-lsp" },
+    { "path": "./packages/session/session-source" },
+    { "path": "./packages/session/session-source-local" },
     { "path": "./apps/cli" }
   ]
 }

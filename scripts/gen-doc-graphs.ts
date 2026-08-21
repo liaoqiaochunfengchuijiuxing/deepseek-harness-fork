@@ -172,6 +172,15 @@ const SERVICE_ROLES: ServiceRole[] = [
     note: 'Backends persist the same SessionEvent vocabulary; apps choose a backend at composition time.',
   },
   {
+    key: 'sessionSources',
+    pkg: 'session-source',
+    title: 'Multi-source session aggregation seam',
+    mode: 'seam',
+    implementations: ['session-source-local'],
+    consumers: ['host-apiproxy', 'federation-hub', 'federation-client'],
+    note: 'Exposes a unified listing, inspection, search, and event subscription surface across local persistence and remote federation nodes.',
+  },
+  {
     key: 'settings',
     pkg: 'settings',
     title: 'User-settings seam',
