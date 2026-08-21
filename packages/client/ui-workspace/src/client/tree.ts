@@ -30,6 +30,16 @@ export interface SessionNode {
   /** Finished running while not selected and not yet opened (the green "done" reminder dot). */
   completed: boolean
   updatedAt: number
+  /** Source identifier that registered this session. */
+  sourceId?: string
+  /** Human-readable display name of the originating session source. */
+  sourceName?: string
+  /** Whether this session originates from a remote federation node. */
+  isRemote?: boolean
+  /** Whether the remote federation source is currently disconnected/degraded. */
+  isDegraded?: boolean
+  /** Whether mutations and prompt inputs are prohibited. */
+  readOnly?: boolean
 }
 
 /** Session order selected by the Workspace browser. */
@@ -224,6 +234,11 @@ function sessionNode(
     completed: s.completed === true,
     updatedAt: s.updatedAt,
     ...(s.pendingInteraction === undefined ? {} : { pendingInteraction: s.pendingInteraction }),
+    ...(s.sourceId !== undefined ? { sourceId: s.sourceId } : {}),
+    ...(s.sourceName !== undefined ? { sourceName: s.sourceName } : {}),
+    ...(s.isRemote !== undefined ? { isRemote: s.isRemote } : {}),
+    ...(s.isDegraded !== undefined ? { isDegraded: s.isDegraded } : {}),
+    ...(s.readOnly !== undefined ? { readOnly: s.readOnly } : {}),
   }
 }
 

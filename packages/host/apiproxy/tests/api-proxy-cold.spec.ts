@@ -798,4 +798,43 @@ describe('sessions.prompt synchronous rejection', () => {
       })
     }
   })
+
+  it('aggregates remote sessions from sessionSources in sessions.list', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(UserQuestionService)
+
+    const mockRemoteSource = {
+      id: 'hub-node',
+      name: 'Hub Node',
+      kind: 'remote',
+      online: true,
+      listSessions: vi.fn().mockResolvedValue([
+        {
+          id: sid('remote-s1'),
+          title: 'Remote Session Title',
+          createdAt: 2000,
+          updatedAt: 2500,
+          cwd: '/remote/workspace',
+        },
+      ]),
+    }
+
+    ctx.provide('sessionSources', {
+      listSources: () => [mockRemoteSource],
+    } as never)
+
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+    const listRes = await api.sessions.list(request({}))
+    expect(listRes.result.ok).toBe(true)
+    if (listRes.result.ok) {
+      const remoteItem = listRes.result.value.items.find(i => i.sessionId === sid('remote-s1'))
+      expect(remoteItem).toBeDefined()
+      expect(remoteItem?.isRemote).toBe(true)
+      expect(remoteItem?.readOnly).toBe(true)
+      expect(remoteItem?.sourceName).toBe('Hub Node')
+      expect(remoteItem?.projections?.values.title).toBe('Remote Session Title')
+    }
+  })
 })

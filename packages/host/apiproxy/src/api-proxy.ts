@@ -1725,6 +1725,60 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         items.push(...summaries)
       }
     }
+    interface RemoteSessionItem {
+      id: SessionId
+      title?: string
+      cwd?: string
+      createdAt: number
+      updatedAt?: number
+      isDegraded?: boolean
+    }
+    interface RemoteSessionSourceLike {
+      id: string
+      name: string
+      kind: string
+      online: boolean
+      listSessions: () => Promise<RemoteSessionItem[]>
+    }
+    const sessionSources = ctx.get('sessionSources') as {
+      listSources?: () => RemoteSessionSourceLike[]
+    } | undefined
+    if (sessionSources?.listSources !== undefined) {
+      const allSources = sessionSources.listSources()
+      for (const source of allSources) {
+        if (source.kind === 'remote') {
+          try {
+            const remoteList = await source.listSessions()
+            for (const remote of remoteList) {
+              if (!attached.has(remote.id)) {
+                items.push({
+                  sessionId: remote.id,
+                  updatedAt: remote.updatedAt ?? remote.createdAt,
+                  running: false,
+                  blank: false,
+                  ...(remote.cwd !== undefined ? { cwd: remote.cwd } : {}),
+                  sourceId: source.id,
+                  sourceName: source.name,
+                  isRemote: true,
+                  isDegraded: remote.isDegraded ?? !source.online,
+                  readOnly: true,
+                  ...(remote.title !== undefined ? {
+                    projections: {
+                      asOfSeq: 0,
+                      values: {
+                        title: remote.title,
+                      },
+                    },
+                  } : {}),
+                })
+              }
+            }
+          } catch {
+            // Fail soft on remote source query error
+          }
+        }
+      }
+    }
     items.sort((a, b) => b.updatedAt - a.updatedAt)
     return items
   }

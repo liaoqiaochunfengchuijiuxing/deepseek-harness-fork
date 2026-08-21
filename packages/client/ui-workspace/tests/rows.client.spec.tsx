@@ -568,4 +568,33 @@ describe('workspace browser rows', () => {
     )
     expect(screen.getByRole('treeitem').className).toMatch(/dropAfter/)
   })
+
+  it('renders remote source badge and degraded status badge', () => {
+    const remoteNode: SessionNode = {
+      id: sid('remote-sess-1'),
+      title: 'Remote Task',
+      blank: false,
+      running: false,
+      runningSubagentCount: 0,
+      completed: false,
+      updatedAt: 1000,
+      isRemote: true,
+      sourceName: 'Hub Node',
+    }
+
+    const { rerender } = render(
+      <SessionNodeItem node={remoteNode} currentId={undefined} now={0} onOpen={vi.fn()}
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />,
+    )
+
+    expect(screen.getByText('Hub Node')).toBeDefined()
+
+    // Degraded state
+    rerender(
+      <SessionNodeItem node={{ ...remoteNode, isDegraded: true }} currentId={undefined} now={0} onOpen={vi.fn()}
+        onRename={vi.fn()} onFork={vi.fn()} onArchive={vi.fn()} t={t} />,
+    )
+
+    expect(screen.getByText('Offline')).toBeDefined()
+  })
 })

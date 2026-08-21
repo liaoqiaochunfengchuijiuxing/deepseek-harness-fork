@@ -35,6 +35,16 @@ export interface SessionListEntry {
   completed: boolean
   /** Lineage indent depth: root = 0; the UI just multiplies by the indent width. */
   depth: number
+  /** Source identifier that registered this session. */
+  sourceId?: string
+  /** Human-readable display name of the originating session source. */
+  sourceName?: string
+  /** Whether this session originates from a remote federation node. */
+  isRemote?: boolean
+  /** Whether the remote federation source is currently disconnected/degraded. */
+  isDegraded?: boolean
+  /** Whether mutations and prompt inputs are prohibited. */
+  readOnly?: boolean
 }
 
 /**

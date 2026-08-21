@@ -96,18 +96,30 @@ export async function inspectApiRemoteSession(
   sessionId: SessionId,
 ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
   const persistence = ctx.get('sessionPersistence')
+  if (persistence !== undefined) {
+    const meta = (await persistence.list()).find(candidate => candidate.id === sessionId)
+    if (meta !== undefined && meta.cwd !== undefined) {
+      const inspected = await persistence.inspect(sessionId)
+      if (inspected.meta.cwd !== undefined) {
+        return { meta: inspected.meta, events: [...inspected.events] }
+      }
+    }
+  }
+
+  const sources = ctx.get('sessionSources') as {
+    getSession?: (id: SessionId) => Promise<{ header: SessionHeader; events: SessionEvent[] } | undefined>
+  } | undefined
+  if (sources?.getSession !== undefined) {
+    const remote = await sources.getSession(sessionId)
+    if (remote !== undefined) {
+      return { meta: remote.header, events: [...remote.events] }
+    }
+  }
+
   if (persistence === undefined) {
     throw new Error('session persistence is not configured (load a dsh-session-persistence backend)')
   }
-  const meta = (await persistence.list()).find(candidate => candidate.id === sessionId)
-  if (meta === undefined || meta.cwd === undefined) {
-    throw new ApiRemoteSessionNotFound(`session "${sessionId}" not found`)
-  }
-  const inspected = await persistence.inspect(sessionId)
-  if (inspected.meta.cwd === undefined) {
-    throw new ApiRemoteSessionNotFound(`session "${sessionId}" not found`)
-  }
-  return { meta: inspected.meta, events: [...inspected.events] }
+  throw new ApiRemoteSessionNotFound(`session "${sessionId}" not found`)
 }
 
 /**

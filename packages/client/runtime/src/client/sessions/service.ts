@@ -70,6 +70,16 @@ export interface SessionSummary {
   updatedAt: number
   /** Current host-computed projection values retained by the object layer. */
   projectionValues?: Readonly<Partial<SessionProjectionMap>>
+  /** Source identifier that registered this session (e.g. 'local', 'federation-hub'). */
+  sourceId?: string
+  /** Human-readable display name of the originating session source. */
+  sourceName?: string
+  /** Whether this session originates from a remote federation node. */
+  isRemote?: boolean
+  /** Whether the remote federation source is currently disconnected/degraded. */
+  isDegraded?: boolean
+  /** Whether mutations and prompt inputs are prohibited (e.g. remote session in read-only mode). */
+  readOnly?: boolean
 }
 
 /**
