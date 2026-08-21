@@ -2319,6 +2319,35 @@ export interface Config {
 
 来源：[`packages/subagent/subagent-fork-in-process/src/index.ts:31`](../packages/subagent/subagent-fork-in-process/src/index.ts)
 
+<a id="deepseek-aidsh-subagent-remote"></a>
+
+## `@deepseek-ai/dsh-subagent-remote`
+
+需要：`subagents`
+
+```ts config-catalog
+/** Config: how to connect to the remote federation endpoint. */
+export interface Config {
+  /** Provider name on `ctx.subagents` (default `remote`). */
+  providerName?: string
+  /** WebSocket endpoint of the remote host (e.g. `ws://localhost:3080/federation/subagent` or `wss://...`). */
+  endpoint: string
+  /** Literal authentication token; prefer {@link tokenEnv} so no secret enters configuration files. */
+  token?: string
+  /** Credential reference (environment variable name) for the token; e.g. `DSH_POD_TOKEN` or `FEDERATION_TOKEN`. */
+  tokenEnv?: string
+  /**
+   * Working directory override for the remote session workspace.
+   * When omitted, each child inherits its delegating parent session's cwd.
+   */
+  cwd?: string
+  /** Bound (ms) on establishing WebSocket connection (default 5000). */
+  connectTimeoutMs?: number
+}
+```
+
+来源：[`packages/subagent/subagent-remote/src/index.ts:37`](../packages/subagent/subagent-remote/src/index.ts)
+
 <a id="deepseek-aidsh-subagent-spawn-in-process"></a>
 
 ## `@deepseek-ai/dsh-subagent-spawn-in-process`
