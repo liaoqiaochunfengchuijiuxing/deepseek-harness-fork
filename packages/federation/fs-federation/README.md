@@ -31,19 +31,11 @@ This plugin occupies `ctx.fs`. A context mounts one filesystem backend (`dsh-fs-
 
 ## Model Experience
 
-### Remote workspace operations
-
-#### What the model sees
-
-The model interacts with filesystem tools (`read_file`, `write_to_file`, `replace_file_content`, `list_dir`) identically to a local backend. Path displays, diffs, and error diagnostics reflect the remote pod workspace.
-
-#### Token effect
-
-Zero extra tokens. Response shapes and error envelopes match the local filesystem contract.
+Indirectly, through [`dsh-tool-fs`](../../fs/tool-fs/README.md), which renders remote content, directory results, mutation acknowledgements, and provider errors identically to the local filesystem contract while federation transport remains internal.
 
 #### KV Cache effect
 
-None.
+No direct invalidation; the named consumer owns any request-prefix changes.
 
 ## Known Limitations and Deferred Work
 

@@ -31,19 +31,11 @@ This plugin occupies `ctx.subprocess`. A context mounts one subprocess backend (
 
 ## Model Experience
 
-### Remote shell execution
-
-#### What the model sees
-
-The model interacts with bash/terminal execution tools identically to a local environment. Output text, exit codes, and cancellation semantics match the local subprocess execution world.
-
-#### Token effect
-
-Zero extra tokens.
+Indirectly, through Consumers such as the Bash executor behind `dsh-tool-bash`, which render remote output, exit facts, background deltas, and spill paths.
 
 #### KV Cache effect
 
-None.
+No direct invalidation; the named consumers own any request-prefix changes.
 
 ## Known Limitations and Deferred Work
 

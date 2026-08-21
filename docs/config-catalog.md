@@ -665,6 +665,16 @@ export interface FederationClientConfig {
   role?: 'read' | 'command' | 'manage' | 'takeover'
   /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
+  /** Direct peer server port to listen for incoming direct P2P connections on overlay/LAN. */
+  directPort?: number
+  /** Direct peer server host to bind on (default: '0.0.0.0'). */
+  directHost?: string
+  /** Advertised direct WebSocket endpoint for other pods to connect to. */
+  directEndpoint?: string
+  /** Whether direct P2P transport optimization is enabled (default: true). */
+  enableDirectTransport?: boolean
+  /** Static direct endpoints for known peers (podId -> wsUrl). */
+  peerDirectEndpoints?: Record<string, string>
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
   /**

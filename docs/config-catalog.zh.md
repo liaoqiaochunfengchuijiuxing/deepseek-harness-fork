@@ -667,6 +667,16 @@ export interface FederationClientConfig {
   role?: 'read' | 'command' | 'manage' | 'takeover'
   /** Bound (ms) on session send, persist, and lease round-trips. */
   requestTimeoutMs?: number
+  /** Direct peer server port to listen for incoming direct P2P connections on overlay/LAN. */
+  directPort?: number
+  /** Direct peer server host to bind on (default: '0.0.0.0'). */
+  directHost?: string
+  /** Advertised direct WebSocket endpoint for other pods to connect to. */
+  directEndpoint?: string
+  /** Whether direct P2P transport optimization is enabled (default: true). */
+  enableDirectTransport?: boolean
+  /** Static direct endpoints for known peers (podId -> wsUrl). */
+  peerDirectEndpoints?: Record<string, string>
   /** Optional custom delegated task executor. */
   executor?: DelegatedTaskExecutor
   /**
@@ -835,6 +845,22 @@ export interface Config {
 ```
 
 来源：[`packages/context/file-reference-local/src/index.ts:35`](../packages/context/file-reference-local/src/index.ts)
+
+<a id="deepseek-aidsh-fs-federation"></a>
+
+## `@deepseek-ai/dsh-fs-federation`
+
+```ts config-catalog
+/** Configuration for remote federation filesystem provider. */
+export interface Config {
+  /** Target pod identifier to route filesystem operations to. */
+  targetPodId: string
+  /** RPC request timeout in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+来源：[`packages/federation/fs-federation/src/index.ts:35`](../packages/federation/fs-federation/src/index.ts)
 
 <a id="deepseek-aidsh-fs-local"></a>
 
@@ -2624,6 +2650,22 @@ export interface Config {
 ```
 
 来源：[`packages/e2b/subprocess-e2b/src/index.ts:25`](../packages/e2b/subprocess-e2b/src/index.ts)
+
+<a id="deepseek-aidsh-subprocess-federation"></a>
+
+## `@deepseek-ai/dsh-subprocess-federation`
+
+```ts config-catalog
+/** Configuration for remote federation subprocess provider. */
+export interface Config {
+  /** Target pod identifier to route subprocess operations to. */
+  targetPodId: string
+  /** RPC request timeout in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+来源：[`packages/federation/subprocess-federation/src/index.ts:34`](../packages/federation/subprocess-federation/src/index.ts)
 
 <a id="deepseek-aidsh-system-prompt"></a>
 
