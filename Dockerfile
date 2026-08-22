@@ -17,8 +17,9 @@ RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 
 WORKDIR /app
 
-# Set Git commit hash for client build metadata
-ARG DSH_CLIENT_COMMIT_HASH=6fafe12
+# Set Git commit hash for client build metadata (pass the building commit;
+# "unknown" marks an unattributed build)
+ARG DSH_CLIENT_COMMIT_HASH=unknown
 ENV DSH_CLIENT_COMMIT_HASH=${DSH_CLIENT_COMMIT_HASH}
 
 # Copy root workspace configurations and lockfiles

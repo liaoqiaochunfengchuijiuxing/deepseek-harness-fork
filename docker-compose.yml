@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Client build metadata: stamp the image with the building commit.
+        DSH_CLIENT_COMMIT_HASH: ${DSH_CLIENT_COMMIT_HASH:-unknown}
     image: deepseek-harness:latest
     container_name: dsh-hub
     restart: unless-stopped
@@ -25,6 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DSH_CLIENT_COMMIT_HASH: ${DSH_CLIENT_COMMIT_HASH:-unknown}
     image: deepseek-harness:latest
     container_name: dsh-pod-1
     restart: unless-stopped
@@ -52,6 +57,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DSH_CLIENT_COMMIT_HASH: ${DSH_CLIENT_COMMIT_HASH:-unknown}
     image: deepseek-harness:latest
     container_name: dsh-pod-2
     restart: unless-stopped
