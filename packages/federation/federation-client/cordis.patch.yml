@@ -15,6 +15,7 @@
       config:
         endpoint: !!js process.env.DSH_FEDERATION_ENDPOINT ?? 'ws://127.0.0.1:3088/federation/connect'
         tokenEnv: DSH_POD_TOKEN
+        ownerPodIdEnv: DSH_POD_ID
         sourceId: federation-hub
         sourceName: Hub Sessions
     - id: federation-client
