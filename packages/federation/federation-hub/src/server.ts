@@ -9,6 +9,11 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { FederationHubService } from './service.ts'
+import {
+  defaultFederationTokenRegistryPath,
+  readFederationTokenRegistry,
+  resolveFederationToken,
+} from './token-registry.ts'
 import type {
   FederationTokenRole,
   FederationWireMessage,
@@ -19,6 +24,17 @@ export interface TokenConfig {
   /** Permission level granted by this token. */
   role: FederationTokenRole
   /** Optional restriction to a specific pod identifier. */
+  podId?: string
+}
+
+/** Result of authenticating one connection attempt. */
+export interface PodAuthentication {
+  /** Permission level granted to the authenticated caller. */
+  role: FederationTokenRole
+  /**
+   * Pod identity the credential is bound to. When present, a registering
+   * pod must declare exactly this podId or its registration is refused.
+   */
   podId?: string
 }
 
@@ -36,6 +52,13 @@ export interface FederationHubConfig {
   heartbeatTimeoutMs?: number
   /** Configured static tokens and their permission roles. */
   tokens?: Record<string, TokenConfig>
+  /**
+   * Per-pod token registry file consulted after the static tokens. Minted
+   * and revoked through `dsh federation-token`; a revoked or unknown secret
+   * authenticates nothing. Defaults to `$DSH_HOME/federation/tokens.json`,
+   * and an absent file contributes no credentials.
+   */
+  tokensPath?: string
   /** Whether to allow anonymous unauthenticated connections (default false). */
   allowAnonymous?: boolean
   /** Single admin / default token for convenience. */
@@ -95,28 +118,30 @@ export class FederationHubServer {
     this.wss = wss
 
     server.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
-      const pathname = url.pathname
+      void (async () => {
+        const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+        const pathname = url.pathname
 
-      if (pathname !== connectPath && pathname !== subagentPath) {
-        socket.destroy()
-        return
-      }
-
-      const authRole = this.authenticateRequest(req, url)
-      if (authRole === null) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-        socket.destroy()
-        return
-      }
-
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        if (pathname === connectPath) {
-          this.handlePodConnection(ws, authRole)
-        } else if (pathname === subagentPath) {
-          this.handleSubagentConnection(ws, authRole)
+        if (pathname !== connectPath && pathname !== subagentPath) {
+          socket.destroy()
+          return
         }
-      })
+
+        const auth = await this.authenticateRequest(req, url)
+        if (auth === null) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+          socket.destroy()
+          return
+        }
+
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          if (pathname === connectPath) {
+            this.handlePodConnection(ws, auth)
+          } else if (pathname === subagentPath) {
+            this.handleSubagentConnection(ws, auth)
+          }
+        })
+      })()
     })
 
     await new Promise<void>((resolve, reject) => {
@@ -172,9 +197,9 @@ export class FederationHubServer {
     }
   }
 
-  private authenticateRequest(req: http.IncomingMessage, url: URL): FederationTokenRole | null {
+  private async authenticateRequest(req: http.IncomingMessage, url: URL): Promise<PodAuthentication | null> {
     if (this.config.allowAnonymous) {
-      return 'takeover'
+      return { role: 'takeover' }
     }
 
     let token: string | undefined
@@ -189,19 +214,31 @@ export class FederationHubServer {
     if (!token) return null
 
     if (this.config.token && token === this.config.token) {
-      return 'takeover'
+      return { role: 'takeover' }
     }
 
     const tokens = this.config.tokens
     if (tokens && tokens[token]) {
       const entry = tokens[token]
-      if (entry) return entry.role
+      if (entry) return { role: entry.role, ...entry.podId === undefined ? {} : { podId: entry.podId } }
+    }
+
+    const registryPath = this.config.tokensPath ?? defaultFederationTokenRegistryPath()
+    try {
+      const registry = await readFederationTokenRegistry(registryPath)
+      const entry = resolveFederationToken(registry, token)
+      if (entry !== undefined) {
+        return { role: entry.role, podId: entry.podId }
+      }
+    } catch {
+      // An unreadable registry denies its own credentials; the static
+      // config above already answered what it could.
     }
 
     return null
   }
 
-  private handlePodConnection(socket: WebSocket, role: FederationTokenRole): void {
+  private handlePodConnection(socket: WebSocket, auth: PodAuthentication): void {
     let podId: string | undefined
 
     socket.on('message', (data: WebSocket.RawData) => {
@@ -216,6 +253,18 @@ export class FederationHubServer {
       const msg = parsed as FederationWireMessage
 
       if (msg.type === 'federation/register') {
+        // An auxiliary connection (ownerPodId set) registers under its own
+        // unique id but claims its owner's identity for the binding check.
+        const claimedPodId = msg.ownerPodId ?? msg.podId
+        if (auth.podId !== undefined && auth.podId !== claimedPodId) {
+          socket.send(JSON.stringify({
+            type: 'federation/error',
+            code: 'POD_IDENTITY_MISMATCH',
+            message: `token is bound to pod "${auth.podId}" but the connection registered as "${claimedPodId}"`,
+          }))
+          socket.close()
+          return
+        }
         podId = msg.podId
         const capabilities = {
           ...msg.capabilities,
@@ -225,7 +274,7 @@ export class FederationHubServer {
           msg.podId,
           msg.name,
           capabilities,
-          role,
+          auth.role,
           socket,
         )
 
@@ -263,7 +312,7 @@ export class FederationHubServer {
     })
   }
 
-  private handleSubagentConnection(socket: WebSocket, _role: FederationTokenRole): void {
+  private handleSubagentConnection(socket: WebSocket, _auth: PodAuthentication): void {
     let inFlightRunId: string | undefined
     let targetPodId: string | undefined
 

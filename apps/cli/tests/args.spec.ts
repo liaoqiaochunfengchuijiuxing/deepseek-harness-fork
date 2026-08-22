@@ -57,6 +57,24 @@ describe('parseDshArgs', () => {
       .toEqual({ mode: 'plugin', profile: 'tui', args: ['add', '--save-dev', 'x'] })
   })
 
+  it('routes federation-token registry management', () => {
+    expect(parse(['federation-token', 'issue', 'pod-1', '--name', 'Worker One', '--role', 'manage']))
+      .toEqual({
+        mode: 'federation-token', action: 'issue', podId: 'pod-1',
+        name: 'Worker One', role: 'manage',
+      })
+    expect(parse(['federation-token', 'issue', 'pod-1', '--path', '/tmp/tokens.json']))
+      .toEqual({
+        mode: 'federation-token', action: 'issue', podId: 'pod-1',
+        registryPath: '/tmp/tokens.json',
+      })
+    expect(parse(['federation-token', 'list'])).toEqual({ mode: 'federation-token', action: 'list' })
+    expect(parse(['federation-token', 'revoke', 'pod-1']))
+      .toEqual({ mode: 'federation-token', action: 'revoke', podId: 'pod-1' })
+    // Launcher flags belong to the boot modes, not the registry manager.
+    expect(exitCode(['--profile', 'tui', 'federation-token', 'list'])).toBe(1)
+  })
+
   it('routes profile and web config dumps', () => {
     expect(parse(['--profile', 'web', '--dump-config']))
       .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [] })

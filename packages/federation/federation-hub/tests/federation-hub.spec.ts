@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session'
@@ -11,11 +14,14 @@ import * as HubPlugin from '../src/index.ts'
 import {
   FederationHubService,
   FederationHubServer,
+  issueFederationToken,
   isApprovalOutcome,
   rawDataToString,
+  revokeFederationToken,
   roleAllowsCommand,
   type FederationRegisteredMessage,
   type FederationHeartbeatAckMessage,
+  type FederationErrorMessage,
   type RemoteSubagentStartMessage,
   type RemoteSubagentChunkMessage,
   type RemoteSubagentStopMessage,
@@ -1307,6 +1313,128 @@ describe('FederationHubServer integration', () => {
     expect(streamCallback).toBeUndefined()
 
     podWs.close()
+  })
+})
+
+describe('FederationHubServer token registry authentication', () => {
+  let ctx: Context
+  let service: FederationHubService
+  let server: FederationHubServer
+  let port: number
+  let registryPath: string
+  let root: string
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), 'dsh-fed-auth-'))
+    registryPath = join(root, 'tokens.json')
+    ctx = new Context()
+    service = new FederationHubService(ctx)
+    server = new FederationHubServer(service, {
+      port: 0,
+      host: '127.0.0.1',
+      tokensPath: registryPath,
+      heartbeatTimeoutMs: 500,
+    })
+    await server.start()
+    port = server.getPort()
+  })
+
+  afterEach(async () => {
+    await server.stop()
+    await ctx.fiber.dispose()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  function openWith(token: string): WebSocket {
+    return new WebSocket(`ws://127.0.0.1:${port}/federation/connect?token=${encodeURIComponent(token)}`)
+  }
+
+  function nextMessage<T extends FederationWireMessage>(ws: WebSocket): Promise<T> {
+    return new Promise((resolve) => {
+      ws.once('message', (data) => { resolve(JSON.parse(rawDataToString(data)) as T) })
+    })
+  }
+
+  it('authenticates a registry-issued token and registers its bound pod', async () => {
+    const entry = await issueFederationToken(registryPath, { podId: 'pod-registry-1' })
+    const ws = openWith(entry.token)
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => { resolve() })
+      ws.on('error', reject)
+    })
+    ws.send(JSON.stringify({
+      type: 'federation/register',
+      podId: 'pod-registry-1',
+      name: 'Registry Pod',
+      capabilities: { workspaces: ['/w'] },
+    }))
+
+    const ack = await nextMessage<FederationRegisteredMessage>(ws)
+    expect(ack.type).toBe('federation/registered')
+    expect(service.getPod('pod-registry-1')?.name).toBe('Registry Pod')
+    expect(service.getPod('pod-registry-1')?.role).toBe('command')
+    ws.close()
+  })
+
+  it('refuses registration when the pod identity does not match the token binding', async () => {
+    const entry = await issueFederationToken(registryPath, { podId: 'pod-registry-1' })
+    const ws = openWith(entry.token)
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => { resolve() })
+      ws.on('error', reject)
+    })
+    ws.send(JSON.stringify({
+      type: 'federation/register',
+      podId: 'pod-impostor',
+      name: 'Impostor',
+      capabilities: { workspaces: ['/w'] },
+    }))
+
+    const error = await nextMessage<FederationErrorMessage>(ws)
+    expect(error.type).toBe('federation/error')
+    expect(error.code).toBe('POD_IDENTITY_MISMATCH')
+    expect(error.message).toContain('pod-registry-1')
+    await new Promise<void>((resolve) => { ws.on('close', () => { resolve() }) })
+    expect(service.getPod('pod-impostor')).toBeUndefined()
+  })
+
+  it('accepts an auxiliary connection claiming its owning pod identity', async () => {
+    const entry = await issueFederationToken(registryPath, { podId: 'pod-registry-1' })
+    const ws = openWith(entry.token)
+
+    await new Promise<void>((resolve, reject) => {
+      ws.on('open', () => { resolve() })
+      ws.on('error', reject)
+    })
+    // A pod's session-mirror source registers under its own unique id while
+    // claiming the owner's identity; the binding check must accept it and
+    // the registration must not replace the owner's primary connection.
+    ws.send(JSON.stringify({
+      type: 'federation/register',
+      podId: 'session-source-federation-hub-00000000-0000',
+      ownerPodId: 'pod-registry-1',
+      name: 'Hub Sessions',
+      capabilities: {},
+    }))
+
+    const ack = await nextMessage<FederationRegisteredMessage>(ws)
+    expect(ack.type).toBe('federation/registered')
+    expect(ack.podId).toBe('session-source-federation-hub-00000000-0000')
+    expect(service.getPod('session-source-federation-hub-00000000-0000')).toBeDefined()
+    ws.close()
+  })
+
+  it('rejects a revoked token at the upgrade handshake', async () => {
+    const entry = await issueFederationToken(registryPath, { podId: 'pod-registry-1' })
+    expect(await revokeFederationToken(registryPath, 'pod-registry-1')).toBe(true)
+
+    const ws = openWith(entry.token)
+    const error = await new Promise<Error>((resolve) => {
+      ws.on('error', (err) => { resolve(err) })
+    })
+    expect(error.message).toMatch(/401|Unexpected server response/)
   })
 })
 

@@ -45,6 +45,9 @@
       "path": "../../packages/core/session"
     },
     {
+      "path": "../../packages/federation/federation-hub"
+    },
+    {
       "path": "../../packages/core/system-prompt"
     },
     {

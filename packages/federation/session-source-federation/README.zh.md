@@ -17,6 +17,8 @@
 | `endpoint` | 必填 | 远端中心 federation hub 的 WebSocket 端点 URL。 |
 | `token` | 可选 | 字面量身份认证 bearer token。 |
 | `tokenEnv` | 可选 | 包含身份认证 token 的环境变量名。 |
+| `ownerPodId` | 可选 | 注册时声明的归属 pod 身份；token 由注册表绑定到某 pod 时必填。 |
+| `ownerPodIdEnv` | 可选 | 持有归属 pod 身份的环境变量名（如 `DSH_POD_ID`）。 |
 | `sourceId` | `federation-hub` | 唯一定义的会话源标识符。 |
 | `sourceName` | `Hub Sessions` | 本会话源的显示名称。 |
 | `connectTimeoutMs` | `5000` | 连接建立超时时间（毫秒）。 |
@@ -30,6 +32,7 @@
   config:
     endpoint: ws://127.0.0.1:3080/federation/connect
     tokenEnv: DSH_POD_TOKEN
+    ownerPodIdEnv: DSH_POD_ID
     sourceId: federation-hub
 ```
 

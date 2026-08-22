@@ -3438,6 +3438,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationApprovalResultMessage {\n    type: \'approval/result\';\n    requestId: string;\n    outcome?: ApprovalOutcome;\n}',
   },
   {
+    name: 'FederationErrorMessage',
+    declaration: 'export interface FederationErrorMessage {\n    type: \'federation/error\';\n    code: string;\n    message: string;\n}',
+  },
+  {
     name: 'FederationHeartbeatAckMessage',
     declaration: 'export interface FederationHeartbeatAckMessage {\n    type: \'federation/heartbeat_ack\';\n    timestamp: number;\n}',
   },
@@ -3555,7 +3559,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage | FederationPeerUpdateMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationErrorMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage | FederationPeerUpdateMessage;',
   },
   {
     name: 'FileDiff',

@@ -15,6 +15,7 @@ Central control-plane service plugin for multi-node DeepSeek Harness federation.
 5. **Command-level session send:** A pod with a `command` (or higher) token may deliver `session/send` into a live writer-node inbox. Sends for one session run in arrival order. A repeated `clientMessageId` returns the first accepted message id. A missing live agent fails with `writer-offline`; a `read` token fails with `unauthorized`. A successful send records that pod as the session's commander. A replaced connection's stale close does not offline the live successor; after reconnect, the same `clientMessageId` is idempotent.
 6. **Approval and question routing:** The hub prepends an `approval/request` listener and intercepts `ctx.userQuestions.ask`. When the requesting agent belongs to a commanded session, the hub forwards over that pod's connection and claims the outcome. A missing, offline, or silent commander fails closed (`unavailable` for approval, `COMMANDER_UNAVAILABLE` for questions) and does not fall through to the hub's local UI. Disconnect while an approval is pending is `unavailable`, never an auto-grant. `interactionTimeoutMs` (default `300000`) bounds the round-trip.
 7. **Session persist and writer leases:** A command-capable pod may upload `session/persist` batches into the hub's existing `ctx.sessionPersistence` (JSONL or SQLite as the hub profile mounts). Already-stored seqs are skipped. A writer lease (`session/lease-acquire` / `session/lease-release`) records the single writer; persist and acquire fail as `stale-writer` when another pod holds the lease. Going offline releases that pod's leases. Persist payloads carry session id, header, and events — credentials never go on this wire.
+8. **Per-pod token registry:** Beyond the static `token`/`tokens` config, the hub consults a durable registry at `tokensPath` (default `$DSH_HOME/federation/tokens.json`, owner-only `0600`). Minted tokens bind a secret to one pod identity and a role; a registering pod whose `podId` does not match the binding is refused with `POD_IDENTITY_MISMATCH`. Revoke takes effect on the next connection without a hub restart. Manage it with `dsh federation-token issue|list|revoke` run against the hub's `$DSH_HOME` — the issue command prints the secret exactly once to stdout, never through a session transcript where it would be durably logged.
 
 ## Model Experience
 
@@ -48,5 +49,6 @@ Neutral: audit events are log-only and are not in the model transcript.
 
 ## Known Limitations and Deferred Work
 
-- Multi-tenant token revocation policies and granular access-control lists remain out of v3.
+- Multi-tenant token revocation policies and granular access-control lists remain out of v3; the registry revokes whole credentials per pod identity.
+- A Web UI minting surface is deferred: printing a fresh secret into a hub session transcript would durably log it, so the CLI stdout is the only sanctioned channel.
 - Direct peer-to-peer relay negotiation is deferred to milestone M5.

@@ -804,6 +804,13 @@ export interface FederationHubConfig {
   heartbeatTimeoutMs?: number
   /** Configured static tokens and their permission roles. */
   tokens?: Record<string, TokenConfig>
+  /**
+   * Per-pod token registry file consulted after the static tokens. Minted
+   * and revoked through `dsh federation-token`; a revoked or unknown secret
+   * authenticates nothing. Defaults to `$DSH_HOME/federation/tokens.json`,
+   * and an absent file contributes no credentials.
+   */
+  tokensPath?: string
   /** Whether to allow anonymous unauthenticated connections (default false). */
   allowAnonymous?: boolean
   /** Single admin / default token for convenience. */
@@ -822,7 +829,7 @@ export interface TokenConfig {
 export type FederationTokenRole = 'read' | 'command' | 'manage' | 'takeover'
 ```
 
-Source: [`packages/federation/federation-hub/src/index.ts:22`](../packages/federation/federation-hub/src/index.ts)
+Source: [`packages/federation/federation-hub/src/index.ts:23`](../packages/federation/federation-hub/src/index.ts)
 
 <a id="deepseek-aidsh-file-reference-local"></a>
 
@@ -2076,6 +2083,10 @@ export interface FederationSessionSourceConfig {
   token?: string
   /** Environment variable name holding the authentication token. */
   tokenEnv?: string
+  /** Owning pod identity claimed at registration; required when the token is registry-bound to a pod. */
+  ownerPodId?: string
+  /** Environment variable name holding the owning pod identity (e.g. DSH_POD_ID). */
+  ownerPodIdEnv?: string
   /** Unique session source identifier (default 'federation-hub'). */
   sourceId?: string
   /** Human-readable display name for this session source (default 'Hub Sessions'). */

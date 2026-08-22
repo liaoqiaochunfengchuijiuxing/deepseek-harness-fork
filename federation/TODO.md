@@ -6,7 +6,7 @@
 
 - [x] 设计文档落档：`.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation`（en/zh/i18n 三元组）
 - [x] 任务书与 TODO 拆解（本文件）
-- [ ] 待决策 #2：token 铸造载体（M1 可暂用手工配置）
+- [x] 待决策 #2：token 铸造载体 = CLI（`dsh federation-token`，密钥只走 stdout，不进会话转录）；hub 落地为 per-pod 令牌注册表（[Agent Note](../.agents/notes/implemented/feature/2026-08-22-federation-token-minting.md)），静态 env token 保留为引导凭据
 
 ## M1 委派通道（v0）
 

@@ -17,6 +17,8 @@ Remote Federation SessionSource provider for `@deepseek-ai/dsh-session-source`. 
 | `endpoint` | required | WebSocket endpoint URL of the remote federation hub. |
 | `token` | optional | Literal authentication bearer token. |
 | `tokenEnv` | optional | Environment variable containing authentication token. |
+| `ownerPodId` | optional | Owning pod identity claimed at registration; required when the token is registry-bound to a pod. |
+| `ownerPodIdEnv` | optional | Environment variable holding the owning pod identity (e.g. `DSH_POD_ID`). |
 | `sourceId` | `federation-hub` | Unique session source identifier. |
 | `sourceName` | `Hub Sessions` | Display name for this session source. |
 | `connectTimeoutMs` | `5000` | Connection timeout in milliseconds. |
@@ -30,6 +32,7 @@ Remote Federation SessionSource provider for `@deepseek-ai/dsh-session-source`. 
   config:
     endpoint: ws://127.0.0.1:3080/federation/connect
     tokenEnv: DSH_POD_TOKEN
+    ownerPodIdEnv: DSH_POD_ID
     sourceId: federation-hub
 ```
 

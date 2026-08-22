@@ -14,6 +14,7 @@ import { FederationHubServer, type FederationHubConfig } from './server.ts'
 export * from './types.ts'
 export * from './service.ts'
 export * from './server.ts'
+export * from './token-registry.ts'
 
 export const name = 'federation-hub'
 export const inject = ['sessionSources']
@@ -32,6 +33,7 @@ export const Config: Schema<Config> = Schema.object({
   heartbeatTimeoutMs: Schema.natural().default(30000).description('Timeout (ms) without heartbeat before marking a pod offline'),
   allowAnonymous: Schema.boolean().default(false).description('Whether to allow unauthenticated connections'),
   token: Schema.string().description('Admin/shared authentication token'),
+  tokensPath: Schema.string().description('Per-pod token registry file consulted after the static tokens (default $DSH_HOME/federation/tokens.json); mint and revoke with dsh federation-token'),
   interactionTimeoutMs: Schema.natural().default(300000).description('Bound (ms) on an approval or question round-trip to the commanding pod'),
 })
 

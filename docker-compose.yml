@@ -43,7 +43,9 @@ services:
       - DSH_FEDERATION_ENDPOINT=ws://hub:3088/federation/connect
       - DSH_POD_ID=pod-1
       - DSH_POD_NAME=Worker Pod 1
-      - DSH_POD_TOKEN=${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}
+      # Per-pod tokens minted with `docker exec dsh-hub dsh federation-token issue pod-1`
+      # override the shared bootstrap token once DSH_POD1_TOKEN is set.
+      - DSH_POD_TOKEN=${DSH_POD1_TOKEN:-${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}}
       - DSH_HOME=/data/pod-1
       - DSH_STORAGE_DIR=/data/pod-1
     volumes:
@@ -72,7 +74,9 @@ services:
       - DSH_FEDERATION_ENDPOINT=ws://hub:3088/federation/connect
       - DSH_POD_ID=pod-2
       - DSH_POD_NAME=Worker Pod 2
-      - DSH_POD_TOKEN=${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}
+      # Per-pod tokens minted with `docker exec dsh-hub dsh federation-token issue pod-2`
+      # override the shared bootstrap token once DSH_POD2_TOKEN is set.
+      - DSH_POD_TOKEN=${DSH_POD2_TOKEN:-${DSH_FEDERATION_TOKEN:?set DSH_FEDERATION_TOKEN in .env (see .env.example)}}
       - DSH_HOME=/data/pod-2
       - DSH_STORAGE_DIR=/data/pod-2
     volumes:

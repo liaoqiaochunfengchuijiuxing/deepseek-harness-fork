@@ -25,6 +25,8 @@ export const Config: Schema<Config> = Schema.object({
   endpoint: Schema.string().required().description('WebSocket endpoint URL of the remote federation hub'),
   token: Schema.string().description('Literal authentication bearer token'),
   tokenEnv: Schema.string().description('Environment variable containing authentication token'),
+  ownerPodId: Schema.string().description('Owning pod identity claimed at registration; required when the token is registry-bound to a pod'),
+  ownerPodIdEnv: Schema.string().description('Environment variable name holding the owning pod identity (e.g. DSH_POD_ID)'),
   sourceId: Schema.string().default('federation-hub').description('Unique session source identifier'),
   sourceName: Schema.string().default('Hub Sessions').description('Display name for this session source'),
   connectTimeoutMs: Schema.natural().default(5000).description('Connection timeout in milliseconds'),

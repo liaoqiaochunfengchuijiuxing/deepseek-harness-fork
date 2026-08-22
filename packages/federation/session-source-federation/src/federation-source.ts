@@ -157,6 +157,14 @@ export class FederationSessionSource implements SessionSource {
     return undefined
   }
 
+  private resolveOwnerPodId(): string | undefined {
+    if (this.config.ownerPodId) return this.config.ownerPodId
+    if (this.config.ownerPodIdEnv && process.env[this.config.ownerPodIdEnv]) {
+      return process.env[this.config.ownerPodIdEnv]
+    }
+    return undefined
+  }
+
   private connect(): void {
     if (this.isDisposed) return
 
@@ -174,9 +182,14 @@ export class FederationSessionSource implements SessionSource {
 
       ws.on('open', () => {
         if (this.ws !== ws) return
+        // Register under a unique id (never the pod's primary id, which would
+        // replace its main connection) while claiming the owning pod's
+        // identity so a registry-bound token's binding check passes.
+        const ownerPodId = this.resolveOwnerPodId()
         this.sendWireMessage({
           type: 'federation/register',
           podId: `session-source-${this.id}-${randomUUID()}`,
+          ...ownerPodId === undefined ? {} : { ownerPodId },
           name: this.name,
           capabilities: {},
         })

@@ -15,6 +15,7 @@
 5. **命令级会话发送：** 持有 `command`（或更高）token 的 pod 可通过 `session/send` 把消息送进活着的写者节点 inbox。同一会话的发送按到达顺序执行。重复的 `clientMessageId` 返回首次接受的 message id。没有活 agent 时以 `writer-offline` 失败；`read` token 以 `unauthorized` 失败。一次成功的发送把该 pod 记为该会话的指挥者。被替换连接的过期 close 不会把后继连接标成离线；重连后同一 `clientMessageId` 仍幂等。
 6. **审批与问询路由：** hub 前置注册 `approval/request` 监听器，并拦截 `ctx.userQuestions.ask`。当请求 agent 属于被指挥会话时，hub 经该 pod 连接转发并认领结果。没有指挥者、指挥者离线或无应答时 fail-closed（审批为 `unavailable`，问询为 `COMMANDER_UNAVAILABLE`），不会落到 hub 本地 UI。审批在途断线结算为 `unavailable`，绝不自动批准。`interactionTimeoutMs`（默认 `300000`）限制往返时限。
 7. **会话持久化与写者租约：** 持有 command 能力的 pod 可通过 `session/persist` 把事件批次写入 hub 现有的 `ctx.sessionPersistence`（hub profile 挂载的 JSONL 或 SQLite）。已存储的 seq 会被跳过。写者租约（`session/lease-acquire` / `session/lease-release`）记录唯一写者；其他 pod 持有租约时 persist 与 acquire 以 `stale-writer` 失败。pod 离线会释放其租约。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。
+8. **Per-pod 令牌注册表：** 在静态 `token`/`tokens` 配置之外，hub 还会查询位于 `tokensPath`（默认 `$DSH_HOME/federation/tokens.json`，属主只读 `0600`）的持久注册表。铸造出的令牌把一个密钥绑定到唯一 pod 身份与角色；注册 pod 的 `podId` 与绑定不符时以 `POD_IDENTITY_MISMATCH` 拒绝。吊销在下次连接即生效，无需重启 hub。用 `dsh federation-token issue|list|revoke`（以 hub 的 `$DSH_HOME` 运行）管理——issue 命令只向 stdout 打印一次密钥，绝不经过会被持久记录的会话转录。
 
 ## 模型体验
 
@@ -48,5 +49,6 @@ hub 插件与指挥 pod 上为零。写者节点支付该操作获准或拒绝�
 
 ## 已知限制与延后工作
 
-- 多租户 token 吊销策略与细粒度访问控制列表不在 v3 范围内。
+- 多租户 token 吊销策略与细粒度访问控制列表不在 v3 范围内；注册表按 pod 身份吊销整张凭据。
+- Web UI 铸造界面延后：把新密钥打印进 hub 会话转录会将其持久记录在日志里，因此 CLI stdout 是唯一认可的通道。
 - Pod 间对等直连传输协商延后至 M5 里程碑。

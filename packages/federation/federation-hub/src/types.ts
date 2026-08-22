@@ -70,6 +70,14 @@ export interface FederationRegisterMessage {
   type: 'federation/register'
   /** Unique identifier of the pod. */
   podId: string
+  /**
+   * Owning pod identity for auxiliary connections (e.g. a pod's read-only
+   * session-mirror source, which registers under its own unique id so it
+   * does not replace the pod's primary connection). A token bound to a pod
+   * identity authenticates a registration whose `ownerPodId ?? podId`
+   * matches that binding.
+   */
+  ownerPodId?: string
   /** Human-readable display name of the pod. */
   name: string
   /** Declared capabilities of the pod. */
@@ -550,10 +558,20 @@ export interface CapabilityCancelMessage {
   requestId: string
 }
 
+/** Generic federation-level error delivered before a connection is closed. */
+export interface FederationErrorMessage {
+  type: 'federation/error'
+  /** Machine-readable error code (e.g. 'POD_IDENTITY_MISMATCH'). */
+  code: string
+  /** Human-readable failure explanation. */
+  message: string
+}
+
 /** Union of all messages sent over the federation WebSocket connection. */
 export type FederationWireMessage =
   | FederationRegisterMessage
   | FederationRegisteredMessage
+  | FederationErrorMessage
   | FederationHeartbeatMessage
   | FederationHeartbeatAckMessage
   | RemoteSubagentStartMessage

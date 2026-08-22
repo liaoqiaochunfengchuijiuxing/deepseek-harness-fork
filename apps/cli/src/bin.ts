@@ -42,6 +42,11 @@ switch (invocation.mode) {
     process.exit(runPlugin(invocation.profile, invocation.args))
     break
   }
+  case 'federation-token': {
+    const { runFederationToken } = await import('./federation-token.ts')
+    process.exit(await runFederationToken(invocation))
+    break
+  }
   case 'dump-config': {
     const { runDumpConfig } = await import('./dump-config.ts')
     runDumpConfig(invocation.profile, invocation.defaultOnly, invocation.patches)

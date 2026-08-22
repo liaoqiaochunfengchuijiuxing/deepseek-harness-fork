@@ -44,8 +44,22 @@ interface PluginInvocation {
   args: string[]
 }
 
+/** Mint, list, or revoke per-pod federation tokens in the hub's registry. */
+export interface FederationTokenInvocation {
+  mode: 'federation-token'
+  action: 'issue' | 'list' | 'revoke'
+  /** Pod identity for issue and revoke. */
+  podId?: string
+  /** Human-readable label recorded with an issued token. */
+  name?: string
+  /** Permission level granted by an issued token. */
+  role?: string
+  /** Registry file override; defaults to `$DSH_HOME/federation/tokens.json`. */
+  registryPath?: string
+}
+
 /** The resolved `dsh` invocation. Help, version, and errors exit inside {@link parseDshArgs}. */
-export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation
+export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation | FederationTokenInvocation
 
 /** Launcher flags shared by the default command and the `web` alias. */
 interface BootOptions {
@@ -179,6 +193,66 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
       if (args.length === 0) program.error('error: plugin needs pnpm arguments to forward (e.g. add <package>)')
       resolved = { mode: 'plugin', profile: options.profile, args }
     })
+
+  /** Options shared by every federation-token action. */
+  interface TokenOptions {
+    name?: string
+    role?: string
+    path?: string
+  }
+  const federationToken = program.command('federation-token')
+    .description('manage the hub\'s per-pod federation token registry (run against the hub\'s $DSH_HOME)')
+  federationToken
+    .helpOption('-h, --help', 'print the federation-token help')
+    .addCommand(
+      new Command('issue')
+        .description('mint a token bound to one pod identity (printing the secret once)')
+        .argument('<podId>', 'pod identity the token authenticates')
+        .option('--name <label>', 'human-readable label recorded with the token')
+        .option('--role <role>', 'permission level: read, command, manage, or takeover (default command)')
+        .option('--path <file>', 'registry file override (default $DSH_HOME/federation/tokens.json)')
+        .action((podId: string, options: TokenOptions) => {
+          rejectParentOptions('federation-token')
+          if (podId === '') program.error('error: issue needs a pod id')
+          resolved = {
+            mode: 'federation-token',
+            action: 'issue',
+            podId,
+            ...options.name === undefined ? {} : { name: options.name },
+            ...options.role === undefined ? {} : { role: options.role },
+            ...options.path === undefined ? {} : { registryPath: options.path },
+          }
+        }),
+    )
+    .addCommand(
+      new Command('list')
+        .description('list registry entries with token prefixes (never full secrets)')
+        .option('--path <file>', 'registry file override (default $DSH_HOME/federation/tokens.json)')
+        .action((options: TokenOptions) => {
+          rejectParentOptions('federation-token')
+          resolved = {
+            mode: 'federation-token',
+            action: 'list',
+            ...options.path === undefined ? {} : { registryPath: options.path },
+          }
+        }),
+    )
+    .addCommand(
+      new Command('revoke')
+        .description('revoke the active token bound to one pod identity')
+        .argument('<podId>', 'pod identity whose token is revoked')
+        .option('--path <file>', 'registry file override (default $DSH_HOME/federation/tokens.json)')
+        .action((podId: string, options: TokenOptions) => {
+          rejectParentOptions('federation-token')
+          if (podId === '') program.error('error: revoke needs a pod id')
+          resolved = {
+            mode: 'federation-token',
+            action: 'revoke',
+            podId,
+            ...options.path === undefined ? {} : { registryPath: options.path },
+          }
+        }),
+    )
 
   try {
     program.parse(argv, { from: 'user' })
