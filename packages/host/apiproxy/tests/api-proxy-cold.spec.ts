@@ -837,4 +837,56 @@ describe('sessions.prompt synchronous rejection', () => {
       expect(remoteItem?.projections?.values.title).toBe('Remote Session Title')
     }
   })
+
+  it('merges locally served sessions with their remote listing instead of duplicating rows', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(UserQuestionService)
+    ctx.sessions.create(sid('attached-both'), { meta: { cwd: '/proj' } })
+    const metas = [header('cold-both', 100)]
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve(metas),
+      locate: () => ({ kind: 'jsonl', path: '/tmp/cold-both.log' }),
+      readFrom: () => Promise.resolve({ meta: metas[0]!, events: [] as SessionEvent[] }),
+    } as never)
+    ctx.provide('sessionSources', {
+      listSources: () => [{
+        id: 'hub-node',
+        name: 'Hub Node',
+        kind: 'remote',
+        online: true,
+        listSessions: vi.fn().mockResolvedValue([
+          { id: sid('attached-both'), title: 'Attached', createdAt: 2000, updatedAt: 5000, cwd: '/remote' },
+          { id: sid('cold-both'), title: 'Cold', createdAt: 2000, updatedAt: 6000, cwd: '/remote' },
+          { id: sid('remote-only'), title: 'Only', createdAt: 2000, updatedAt: 700, cwd: '/remote' },
+        ]),
+      }],
+    } as never)
+
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+    const listRes = await api.sessions.list(request({}))
+    expect(listRes.result.ok).toBe(true)
+    if (!listRes.result.ok) return
+    const items = listRes.result.value.items
+    // One row per identity: the locally served copies absorb the remote
+    // listing rather than appearing twice.
+    for (const id of ['attached-both', 'cold-both', 'remote-only']) {
+      expect(items.filter(item => item.sessionId === sid(id))).toHaveLength(1)
+    }
+    // Merged rows keep the local cwd and gain the remote markers and the
+    // fresher remote timestamp; the remote-only view keeps readOnly.
+    expect(items.find(item => item.sessionId === sid('attached-both'))).toMatchObject({
+      cwd: '/proj', isRemote: true, sourceId: 'hub-node', sourceName: 'Hub Node',
+    })
+    expect(items.find(item => item.sessionId === sid('attached-both'))?.readOnly).toBeUndefined()
+    expect(items.find(item => item.sessionId === sid('attached-both'))?.updatedAt).toBeGreaterThanOrEqual(5000)
+    expect(items.find(item => item.sessionId === sid('cold-both'))).toMatchObject({
+      isRemote: true, sourceName: 'Hub Node',
+    })
+    expect(items.find(item => item.sessionId === sid('cold-both'))?.updatedAt).toBeGreaterThanOrEqual(6000)
+    expect(items.find(item => item.sessionId === sid('remote-only'))).toMatchObject({
+      isRemote: true, readOnly: true, sourceName: 'Hub Node',
+    })
+  })
 })

@@ -27,3 +27,5 @@ The suffix append satisfies the persistence seam's contiguous-seq contract by co
 ## Consequences
 
 Each cold resume of a federation-sourced identity performs one extra remote full-log read plus an O(n) deep comparison — bounded, one-shot, and off the interactive path (inside the resume promise). The catch-up is idempotent: a current copy appends nothing. Behavior for local-authored sessions and first-time materialization is unchanged. The stale-copy window between two cold resumes still exists (this is pull-at-resume, not push); closing it needs the lease protocol's ownership transfer.
+
+Because a materialized copy also shows up in the remote source's listing, `sessions.list` merges the two into one row instead of emitting a duplicate: the locally served entry (attached or cold) keeps its cwd, projections, and liveness, and gains the remote markers plus the fresher remote `updatedAt`. A session the remote source lists but the host does not serve locally keeps the read-only remote-only view.

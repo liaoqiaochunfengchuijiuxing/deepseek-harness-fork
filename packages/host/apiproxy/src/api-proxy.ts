@@ -1745,33 +1745,49 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     } | undefined
     if (sessionSources?.listSources !== undefined) {
       const allSources = sessionSources.listSources()
+      // A session both served locally and listed by a remote source is one
+      // row, not two: the local entry keeps its cwd, projections, and
+      // liveness, and gains the remote markers so the sidebar groups it
+      // under its origin source. A pod materializes hub sessions for cold
+      // resume, so without this merge every materialized hub session would
+      // appear once unmarked (Ungrouped) and once marked (its remote group).
+      const byId = new Map(items.map(item => [item.sessionId, item]))
       for (const source of allSources) {
         if (source.kind === 'remote') {
           try {
             const remoteList = await source.listSessions()
             for (const remote of remoteList) {
-              if (!attached.has(remote.id)) {
-                items.push({
-                  sessionId: remote.id,
-                  updatedAt: remote.updatedAt ?? remote.createdAt,
-                  running: false,
-                  blank: false,
-                  ...(remote.cwd !== undefined ? { cwd: remote.cwd } : {}),
-                  sourceId: source.id,
-                  sourceName: source.name,
-                  isRemote: true,
-                  isDegraded: remote.isDegraded ?? !source.online,
-                  readOnly: true,
-                  ...(remote.title !== undefined ? {
-                    projections: {
-                      asOfSeq: 0,
-                      values: {
-                        title: remote.title,
-                      },
-                    },
-                  } : {}),
-                })
+              const local = byId.get(remote.id)
+              if (local !== undefined) {
+                local.sourceId = source.id
+                local.sourceName = source.name
+                local.isRemote = true
+                local.isDegraded = remote.isDegraded ?? !source.online
+                local.updatedAt = Math.max(local.updatedAt, remote.updatedAt ?? remote.createdAt)
+                continue
               }
+              const entry: SessionSummary = {
+                sessionId: remote.id,
+                updatedAt: remote.updatedAt ?? remote.createdAt,
+                running: false,
+                blank: false,
+                ...(remote.cwd !== undefined ? { cwd: remote.cwd } : {}),
+                sourceId: source.id,
+                sourceName: source.name,
+                isRemote: true,
+                isDegraded: remote.isDegraded ?? !source.online,
+                readOnly: true,
+                ...(remote.title !== undefined ? {
+                  projections: {
+                    asOfSeq: 0,
+                    values: {
+                      title: remote.title,
+                    },
+                  },
+                } : {}),
+              }
+              items.push(entry)
+              byId.set(remote.id, entry)
             }
           } catch {
             // Fail soft on remote source query error
