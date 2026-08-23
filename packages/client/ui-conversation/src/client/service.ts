@@ -63,10 +63,27 @@ export interface IConversation {
 function browserDraftAttachment(file: File): ComposerAttachment {
   return {
     kind: 'image',
-    id: crypto.randomUUID() as DraftAttachmentId,
+    id: randomUuid() as DraftAttachmentId,
     previewUrl: URL.createObjectURL(file),
     file,
   }
+}
+
+/**
+ * Generate an RFC 4122 version 4 UUID without requiring a secure context.
+ * `crypto.randomUUID()` exists only on HTTPS and localhost origins; the
+ * composer must also mint ids for pages served over plain HTTP from a LAN
+ * address, where only `crypto.getRandomValues()` is available. Private copy:
+ * cross-plugin value imports are forbidden by client export discipline.
+ * @returns a version 4 UUID string.
+ */
+function randomUuid(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  view.setUint8(6, (view.getUint8(6) & 0x0f) | 0x40)
+  view.setUint8(8, (view.getUint8(8) & 0x3f) | 0x80)
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 interface ImageUrlEntry {

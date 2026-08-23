@@ -296,8 +296,7 @@ export abstract class AbstractApiClient implements IApiClient {
   }
 
   protected mintRpcId(): RpcId {
-    // crypto.randomUUID is a Web API (browser + Node ≥19): keeps this base platform-neutral.
-    return RpcId(crypto.randomUUID())
+    return RpcId(randomUuid())
   }
 
   /**
@@ -541,6 +540,23 @@ export class InProcessApiClient extends AbstractApiClient {
 }
 
 /** Mirror fetch's abort rejection: the signal's reason when present, else a DOMException-style AbortError. */
+/**
+ * Generate an RFC 4122 version 4 UUID without requiring a secure context.
+ * `crypto.randomUUID()` exists only on HTTPS and localhost origins, but this
+ * carrier also serves pages reached over plain HTTP from a LAN address;
+ * `crypto.getRandomValues()` is available everywhere. Same fallback as
+ * dsh-client-connection's private copy.
+ * @returns a version 4 UUID string.
+ */
+function randomUuid(): string {
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  view.setUint8(6, (view.getUint8(6) & 0x0f) | 0x40)
+  view.setUint8(8, (view.getUint8(8) & 0x3f) | 0x80)
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 function abortError(signal: AbortSignal): Error {
   const reason: unknown = signal.reason
   if (reason instanceof Error) return reason
