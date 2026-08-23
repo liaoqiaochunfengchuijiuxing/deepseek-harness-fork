@@ -23,7 +23,7 @@ services:
       # Cloud workspace space: hub sessions' working directory persists here
       # across image rebuilds (register it via workspace.create /data/workspace).
       - hub_workspace:/data/workspace
-    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-hub/cordis.patch.yml", "--no-open"]
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-hub/cordis.patch.yml", "--no-open", "--trusted-host", "${DSH_TRUSTED_HOST:-localhost}"]
     networks:
       - dsh-net
 
@@ -54,7 +54,7 @@ services:
     volumes:
       - pod1_data:/data/pod-1
       - pod1_workspace:/workspace
-    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open"]
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open", "--trusted-host", "${DSH_TRUSTED_HOST:-localhost}"]
     networks:
       - dsh-net
 
@@ -85,7 +85,7 @@ services:
     volumes:
       - pod2_data:/data/pod-2
       - pod2_workspace:/workspace
-    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open"]
+    command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-client/cordis.patch.yml", "--no-open", "--trusted-host", "${DSH_TRUSTED_HOST:-localhost}"]
     networks:
       - dsh-net
 
