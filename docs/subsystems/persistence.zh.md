@@ -86,6 +86,15 @@ interface SessionHeader {
    * would replay history the model can no longer act on.
    */
   readonly agentPreset?: string
+  /**
+   * Id of the session source this local log was read through from (a remote
+   * read-through copy, not a session authored on this node). While the copy
+   * stays a strict prefix of that source's log, reads catch up the remote
+   * suffix through THIS source instead of the registry scan, which a
+   * registered local source would otherwise answer with the stale copy; the
+   * copy serves as the offline snapshot when that source is unreachable.
+   */
+  readonly remoteAuthority?: string
 }
 ```
 

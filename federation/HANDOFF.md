@@ -1,17 +1,19 @@
-# 联邦接手文档（从 T5.2 续做）
+# 联邦接手文档（从路由式执行阶段 3 续做）
 
 本文件是当前树的**开工规格**，不是设计重写。任务定义见 [TASKS.md](TASKS.md)，勾选清单见 [TODO.md](TODO.md)，设计决策见 [hub-pod 联邦 Agent Note](../.agents/notes/implemented/feature/2026-08-21-dsh-hub-pod-federation.zh.md)（三元组 en/zh/i18n；路径是 `implemented/`，不是 `proposed/`）。仓库纪律以根 [AGENTS.md](../AGENTS.md) 为准。
 
-**停在哪里：** M1–M4 与 T5.1 已在 `master`。T5.2（remote `ctx.fs` / `ctx.subprocess`）**尚未开包、没有未提交代码**。不要开始 T5.3。不要改 `agent-loop` 或 core spine。
+**停在哪里：** M1–M5 全部完成（T5.2 remote fs/subprocess、T5.3 直连优化均已落树）。路由式执行提案（[2026-08-23](../.agents/notes/proposed/feature/2026-08-23-federation-routed-execution.zh.md)）阶段 1（实时视图）与阶段 2（执行路由 + 接管退役）已在 `master`。**下一步是阶段 3：跨 pod 操作（所有者路由）。**
 
 ## Git 快照（写本文时）
 
+（下文"必读顺序"起的 T5.2 章节是已完成任务的实施记录，保留作参考；wire、RPC 与陷阱清单对阶段 3 仍然适用。）
+
 | 项 | 值 |
 |---|---|
-| 分支 | `master`，相对 `origin/master` **超前 18 commit，未 push** |
-| HEAD | `a0b1f2efac` `feat(federation): relay pod-to-pod subagent runs through the hub (T5.1)` |
-| 工作树代码 | 干净；T5.2 目录不存在 |
-| 本接手文档 | `federation/HANDOFF.md` + `TASKS.md` / `TODO.md` / `PROMPT.md` 的配套更新 |
+| 分支 | fork 的 `master`，与 `origin/master` 同步 |
+| HEAD | `64a1f08c2c` 之后含阶段 2 实施提交 |
+| 工作树代码 | 阶段 2：pod RPC 联邦转发、writer 冷启动、三条控制 wire、接管退役 |
+| 设计文档 | `.agents/notes/proposed/feature/2026-08-23-federation-routed-execution.zh.md`（阶段 1、2 已标 implemented） |
 
 近期独立 commit（新 agent 不必重读对话）：
 
@@ -38,8 +40,11 @@
 | M3 | `/remote_send` → `session/send`；指挥者绑定；审批/问询 fail-closed 回指挥 pod |
 | M4 | `dsh-session-persistence-federation` 本地 spool + 异步 `session/persist`；内存租约；`/fork_to_local`、`/push_to_hub` |
 | T5.1 | `subagent/start.targetPodId`；hub 经目标 pod 既有连接中继；**未指定目标时**选一台在线 pod（仅 subagent） |
-| T5.2 | **下一步**。包未创建 |
-| T5.3 | overlay 下跳过 hub 中继。T5.2 不要做 |
+| T5.2 | remote `ctx.fs` / `ctx.subprocess`（`fs-federation` / `subprocess-federation`），完整 seam，已落树 ✅ |
+| T5.3 | 直连 P2P 传输 + hub 回退（`enableDirectTransport`、`connectDirectPeer`），已落树 ✅ |
+| 路由阶段 1 | pod 打开 hub 会话实时同步事件流（远端桥 + 冷会话激活订阅）✅ |
+| 路由阶段 2 | pod 对 hub 会话的 Agent-bound RPC 联邦转发：prompt→`session/send`（writer 冷启动）、queue/cancel/select-model 三条新 wire、接管模型退役 ✅ |
+| 路由阶段 3 | **下一步**。所有者路由：所有权注册表、pod-owned 远端源、`session/stream-forward`、owner-offline。见提案第 6 节 |
 
 决策状态：
 
@@ -280,9 +285,7 @@ pnpm run gen-config-catalog
 
 ## 给下一任的开工指令
 
-把 [PROMPT.md](PROMPT.md) 整段交给开发 agent，并附加：
-
-> 从 T5.2 开始。先读 `federation/HANDOFF.md`。HEAD 是 T5.1（`a0b1f2efac`）。不要开 T5.3，不要改 agent-loop。按 HANDOFF 的包路径、wire、rpcToPod/rpcCapability、完整 FileSystem + SubprocessRuntime 实现。一次一个 commit：`feat(federation): … (T5.2)`。新包需要 `pnpm install`。
+阶段 3 开工：先读路由式执行[提案](../.agents/notes/proposed/feature/2026-08-23-federation-routed-execution.zh.md)第 6 节（所有者路由），再读本文件与 [TASKS.md](TASKS.md)。不要改 `agent-loop` 或 core spine。一次一个 commit：`feat(federation): … (routed phase 3)`。
 
 ## 提交约定
 

@@ -671,6 +671,24 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'accepted message id, or a structured failure.',
       },
       {
+        signature: 'queueUpdateSession( sessionId: SessionId, itemId: string, action: { kind: \'remove\' } | { kind: \'steer\' } | { kind: \'edit\'; content: ContentBlock[] }, ): Promise<SessionQueueUpdateResult>',
+        description: 'Mutate one queued inbox item on the writer node.',
+        parameters: [{ name: 'sessionId', description: 'target session on the writer node.' }, { name: 'itemId', description: 'queued message id to operate on.' }, { name: 'action', description: 'drop, steer, or text-edit mutation.' }],
+        returns: 'acceptance, or a structured failure.',
+      },
+      {
+        signature: 'cancelSession(sessionId: SessionId): Promise<SessionCancelResult>',
+        description: 'Cancel the running turn of a writer-node session, keeping its inbox.',
+        parameters: [{ name: 'sessionId', description: 'target session on the writer node.' }],
+        returns: 'acceptance, or a structured failure.',
+      },
+      {
+        signature: 'selectModelSession( sessionId: SessionId, selection: FederatedModelSelection, ): Promise<SessionSelectModelResult>',
+        description: 'Select the model a writer-node session runs its next steps on.',
+        parameters: [{ name: 'sessionId', description: 'target session on the writer node.' }, { name: 'selection', description: 'provider/model/effort to apply for the next request.' }],
+        returns: 'applied selection, or a structured failure.',
+      },
+      {
         signature: 'persistSession( sessionId: SessionId, events: SessionEvent[], header?: SessionHeader, ): Promise<SessionPersistResult>',
         description: 'Upload a locally-spooled event batch to hub persistence.',
         parameters: [{ name: 'sessionId', description: 'session whose log is being uploaded.' }, { name: 'events', description: 'contiguous events to append.' }, { name: 'header', description: 'session header when the hub has not materialized this session.' }],
@@ -716,6 +734,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'bindInteractionBridges(): void',
         description: 'Bind `approval/request` and `ctx.userQuestions.ask` so commanded sessions route to the commanding pod. Call after those services are composed, or from plugin apply so `inject` waits for them.',
         parameters: [],
+      },
+      {
+        signature: 'bindWriterSource(source: FederationWriterSource): void',
+        description: 'Bind the writer source used by routed session control. The host gateway calls this with its shared agent resolver so `session/send` cold-starts and model switches apply through the same composition the hub\'s own Web RPC path uses. Without a source, sends to sessions with no live agent fail with `writer-offline` as before.',
+        parameters: [{ name: 'source', description: 'the host gateway\'s writer factory.' }],
       },
       {
         signature: 'listPods(): PodInfo[]',
@@ -3450,10 +3473,6 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationHeartbeatMessage {\n    type: \'federation/heartbeat\';\n    podId: string;\n}',
   },
   {
-    name: 'FederationPeerUpdateMessage',
-    declaration: 'export interface FederationPeerUpdateMessage {\n    type: \'peer/update\';\n    podId: string;\n    name?: string;\n    directEndpoint?: string;\n    status: PodStatus;\n}',
-  },
-  {
     name: 'FederationPingMessage',
     declaration: 'export interface FederationPingMessage {\n    type: \'ping\';\n}',
   },
@@ -3483,7 +3502,19 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationRegisterMessage',
-    declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    name: string;\n    capabilities?: PodCapabilities;\n    directEndpoint?: string;\n}',
+    declaration: 'export interface FederationRegisterMessage {\n    type: \'federation/register\';\n    podId: string;\n    ownerPodId?: string;\n    name: string;\n    capabilities?: PodCapabilities;\n    directEndpoint?: string;\n}',
+  },
+  {
+    name: 'FederationSessionCancelMessage',
+    declaration: 'export interface FederationSessionCancelMessage {\n    type: \'session/cancel\';\n    requestId: string;\n    sessionId: SessionId;\n}',
+  },
+  {
+    name: 'FederationSessionCancelResultMessage',
+    declaration: 'export interface FederationSessionCancelResultMessage {\n    type: \'session/cancel-result\';\n    requestId: string;\n    accepted?: boolean;\n    code?: FederationSessionControlErrorCode;\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionControlErrorCode',
+    declaration: 'export type FederationSessionControlErrorCode = \'writer-offline\' | \'unauthorized\' | \'invalid\';',
   },
   {
     name: 'FederationSessionGetMessage',
@@ -3522,12 +3553,28 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface FederationSessionPersistResultMessage {\n    type: \'session/persist-result\';\n    requestId: string;\n    lastSeq?: number;\n    code?: \'unauthorized\' | \'invalid\' | \'stale-writer\' | \'unavailable\';\n    error?: string;\n}',
   },
   {
+    name: 'FederationSessionQueueUpdateMessage',
+    declaration: 'export interface FederationSessionQueueUpdateMessage {\n    type: \'session/queue-update\';\n    requestId: string;\n    sessionId: SessionId;\n    itemId: string;\n    action: {\n        kind: \'remove\';\n    } | {\n        kind: \'steer\';\n    } | {\n        kind: \'edit\';\n        content: ContentBlock[];\n    };\n}',
+  },
+  {
+    name: 'FederationSessionQueueUpdateResultMessage',
+    declaration: 'export interface FederationSessionQueueUpdateResultMessage {\n    type: \'session/queue-update-result\';\n    requestId: string;\n    accepted?: boolean;\n    code?: FederationSessionControlErrorCode;\n    error?: string;\n}',
+  },
+  {
     name: 'FederationSessionSearchMessage',
     declaration: 'export interface FederationSessionSearchMessage {\n    type: \'session/search\';\n    requestId: string;\n    query?: string;\n    cwd?: string;\n    limit?: number;\n}',
   },
   {
     name: 'FederationSessionSearchResultMessage',
     declaration: 'export interface FederationSessionSearchResultMessage {\n    type: \'session/search-result\';\n    requestId: string;\n    sessions: SessionSummary[];\n    error?: string;\n}',
+  },
+  {
+    name: 'FederationSessionSelectModelMessage',
+    declaration: 'export interface FederationSessionSelectModelMessage {\n    type: \'session/select-model\';\n    requestId: string;\n    sessionId: SessionId;\n    selection: FederatedModelSelection;\n}',
+  },
+  {
+    name: 'FederationSessionSelectModelResultMessage',
+    declaration: 'export interface FederationSessionSelectModelResultMessage {\n    type: \'session/select-model-result\';\n    requestId: string;\n    selected?: FederatedModelSelection;\n    code?: FederationSessionControlErrorCode;\n    error?: string;\n}',
   },
   {
     name: 'FederationSessionSendErrorCode',
@@ -3559,7 +3606,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'FederationWireMessage',
-    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationErrorMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage | FederationPeerUpdateMessage;',
+    declaration: 'export type FederationWireMessage = FederationRegisterMessage | FederationRegisteredMessage | FederationErrorMessage | FederationHeartbeatMessage | FederationHeartbeatAckMessage | RemoteSubagentStartMessage | RemoteSubagentAbortMessage | RemoteSubagentChunkMessage | RemoteSubagentStopMessage | RemoteSubagentErrorMessage | FederationPingMessage | FederationPongMessage | FederationSessionListMessage | FederationSessionListResultMessage | FederationSessionGetMessage | FederationSessionGetResultMessage | FederationSessionSearchMessage | FederationSessionSearchResultMessage | FederationSessionSubscribeMessage | FederationSessionStreamEventMessage | FederationSessionUnsubscribeMessage | FederationSessionSendMessage | FederationSessionSendResultMessage | FederationSessionQueueUpdateMessage | FederationSessionQueueUpdateResultMessage | FederationSessionCancelMessage | FederationSessionCancelResultMessage | FederationSessionSelectModelMessage | FederationSessionSelectModelResultMessage | FederationApprovalRequestMessage | FederationApprovalResultMessage | FederationApprovalCancelMessage | FederationQuestionRequestMessage | FederationQuestionResultMessage | FederationQuestionCancelMessage | FederationSessionPersistMessage | FederationSessionPersistResultMessage | FederationSessionLeaseAcquireMessage | FederationSessionLeaseReleaseMessage | FederationSessionLeaseResultMessage | CapabilityRequestMessage | CapabilityResultMessage | CapabilityStreamMessage | CapabilityCancelMessage | Feder /* …truncated — full shape in source */',
+  },
+  {
+    name: 'FederationWriterResolution',
+    declaration: 'export type FederationWriterResolution = {\n    readonly agent: Agent;\n} | {\n    readonly error: {\n        readonly code: string;\n        readonly message: string;\n    };\n};',
+  },
+  {
+    name: 'FederationWriterSource',
+    declaration: 'export interface FederationWriterSource {\n    resolveWriter(sessionId: SessionId): Promise<FederationWriterResolution>;\n    applySelection(sessionId: SessionId, selection: {\n        provider: string;\n        model: string;\n        reasoningEffort?: string;\n    }): Promise<{\n        ok: true;\n        selected: {\n            provider: string;\n            model: string;\n            reasoningEffort?: string;\n        };\n    } | {\n        ok: false;\n        message: string;\n    }>;\n}',
   },
   {
     name: 'FileDiff',
@@ -4290,6 +4345,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type SessionAvailability = \'live\' | \'persisted\';',
   },
   {
+    name: 'SessionCancelResult',
+    declaration: 'export type SessionCancelResult = {\n    ok: true;\n    accepted: true;\n} | {\n    ok: false;\n    code: SessionControlErrorCode;\n    message: string;\n};',
+  },
+  {
+    name: 'SessionControlErrorCode',
+    declaration: 'export type SessionControlErrorCode = \'disconnected\' | \'timeout\' | \'writer-offline\' | \'unauthorized\' | \'invalid\';',
+  },
+  {
     name: 'SessionEvent',
     declaration: 'export type SessionEvent<T extends SessionEventType = SessionEventType> = {\n    [K in SessionEventType]: {\n        type: K;\n        seq: number;\n        time: number;\n        data: SessionEventMap[K];\n        ignorable?: true;\n    } & (K extends SurfaceEventType ? {\n        sourceEventSeqs?: number[];\n        surfaceOp?: SurfaceOp;\n    } : object);\n}[T];',
   },
@@ -4359,7 +4422,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionHeader',
-    declaration: 'export interface SessionHeader {\n    readonly version: number;\n    readonly id: SessionId;\n    readonly createdAt: number;\n    readonly cwd?: string;\n    readonly parentSession?: SessionId;\n    readonly seedLength?: number;\n    readonly origin?: \'subagent\';\n    readonly delegationDepth?: number;\n    readonly agentPreset?: string;\n}',
+    declaration: 'export interface SessionHeader {\n    readonly version: number;\n    readonly id: SessionId;\n    readonly createdAt: number;\n    readonly cwd?: string;\n    readonly parentSession?: SessionId;\n    readonly seedLength?: number;\n    readonly origin?: \'subagent\';\n    readonly delegationDepth?: number;\n    readonly agentPreset?: string;\n    readonly remoteAuthority?: string;\n}',
   },
   {
     name: 'SessionId',
@@ -4418,6 +4481,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionProjectionMap {\n}',
   },
   {
+    name: 'SessionQueueUpdateResult',
+    declaration: 'export type SessionQueueUpdateResult = {\n    ok: true;\n    accepted: true;\n} | {\n    ok: false;\n    code: SessionControlErrorCode;\n    message: string;\n};',
+  },
+  {
     name: 'SessionRawArtifact',
     declaration: 'export interface SessionRawArtifact {\n    readonly meta: SessionHeader;\n    readonly filename: string;\n    readonly content: string;\n}',
   },
@@ -4468,6 +4535,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionSearchRequest',
     declaration: 'export interface SessionSearchRequest {\n    query: string;\n    sessionFilters?: readonly SessionResultFilter[];\n    eventFilters?: readonly SessionEventMetadataFilter[];\n    limit?: number;\n    cursor?: SessionSearchCursor;\n}',
+  },
+  {
+    name: 'SessionSelectModelResult',
+    declaration: 'export type SessionSelectModelResult = {\n    ok: true;\n    selected: FederatedModelSelection;\n} | {\n    ok: false;\n    code: SessionControlErrorCode;\n    message: string;\n};',
   },
   {
     name: 'SessionSendResult',

@@ -41,14 +41,19 @@ import type {
   FederationClientWireMessage,
   FederationQuestionCancelPayload,
   FederationQuestionRequestPayload,
+  FederatedModelSelection,
   PodClientCapabilities,
   PodConnectionStatus,
   RemoteSubagentAbortPayload,
   RemoteSubagentChunkPayload,
   RemoteSubagentStartPayload,
   RemoteSubagentStopPayload,
+  SessionCancelResult,
+  SessionControlErrorCode,
   SessionLeaseResult,
   SessionPersistResult,
+  SessionQueueUpdateResult,
+  SessionSelectModelResult,
   SessionSendResult,
 } from './types.ts'
 import { isApprovalOutcome } from './types.ts'
@@ -156,6 +161,21 @@ interface PendingLease {
   timer: NodeJS.Timeout
 }
 
+interface PendingQueueUpdate {
+  resolve: (result: SessionQueueUpdateResult) => void
+  timer: NodeJS.Timeout
+}
+
+interface PendingCancel {
+  resolve: (result: SessionCancelResult) => void
+  timer: NodeJS.Timeout
+}
+
+interface PendingSelectModel {
+  resolve: (result: SessionSelectModelResult) => void
+  timer: NodeJS.Timeout
+}
+
 interface PendingCapability {
   resolve: (result: CapabilityResult) => void
   onStream?: ((chunk: unknown, done?: boolean) => void) | undefined
@@ -206,6 +226,9 @@ export class FederationPodClient {
   private readonly pendingSends = new Map<string, PendingSend>()
   private readonly pendingPersists = new Map<string, PendingPersist>()
   private readonly pendingLeases = new Map<string, PendingLease>()
+  private readonly pendingQueueUpdates = new Map<string, PendingQueueUpdate>()
+  private readonly pendingCancels = new Map<string, PendingCancel>()
+  private readonly pendingSelectModels = new Map<string, PendingSelectModel>()
   private readonly pendingApprovals = new Map<string, AbortController>()
   private readonly pendingQuestions = new Map<string, AbortController>()
   private readonly pendingCapabilities = new Map<string, PendingCapability>()
@@ -492,14 +515,106 @@ export class FederationPodClient {
   }
 
   /**
+   * Shared RPC shape of the routed session-control verbs: one pending map
+   * entry, one timeout, and one structured failure per outcome union.
+   */
+  private controlRpc<T>(
+    pending: Map<string, { resolve: (result: T) => void; timer: NodeJS.Timeout }>,
+    buildMessage: (requestId: string) => FederationClientWireMessage,
+    disconnected: () => T,
+    timedOut: (timeoutMs: number) => T,
+  ): Promise<T> {
+    if (this.status !== 'connected' || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.resolve(disconnected())
+    }
+    const requestId = randomUUID()
+    const timeoutMs = this.config.requestTimeoutMs ?? 10_000
+    return new Promise<T>((resolve) => {
+      const timer = setTimeout(() => {
+        pending.delete(requestId)
+        resolve(timedOut(timeoutMs))
+      }, timeoutMs)
+      pending.set(requestId, { resolve, timer })
+      this.sendMessage(buildMessage(requestId))
+    })
+  }
+
+  /** Result payload for a routed control reply that carries no success value. */
+  private static controlReply(
+    accepted: boolean | undefined,
+    code: 'writer-offline' | 'unauthorized' | 'invalid' | undefined,
+    error: string | undefined,
+    fallback: string,
+  ): { ok: true; accepted: true } | { ok: false; code: SessionControlErrorCode; message: string } {
+    if (accepted === true && code === undefined) return { ok: true, accepted: true }
+    const resolved = code === 'writer-offline' || code === 'unauthorized' || code === 'invalid'
+      ? code
+      : 'invalid'
+    return { ok: false, code: resolved, message: error ?? fallback }
+  }
+
+  /**
+   * Mutate one queued inbox item on the writer node over the hub connection.
+   * @param sessionId - target session on the writer node.
+   * @param itemId - queued message id to operate on.
+   * @param action - drop, steer, or text-edit mutation.
+   * @returns acceptance, or a structured failure.
+   */
+  queueUpdateSession(
+    sessionId: SessionId,
+    itemId: string,
+    action: { kind: 'remove' } | { kind: 'steer' } | { kind: 'edit'; content: ContentBlock[] },
+  ): Promise<SessionQueueUpdateResult> {
+    return this.controlRpc(
+      this.pendingQueueUpdates,
+      requestId => ({ type: 'session/queue-update', requestId, sessionId, itemId, action }),
+      () => ({ ok: false, code: 'disconnected', message: 'federation client is not connected' }),
+      timeoutMs => ({ ok: false, code: 'timeout', message: `session queue update timed out after ${timeoutMs}ms` }),
+    )
+  }
+
+  /**
+   * Cancel the running turn of a writer-node session over the hub connection,
+   * keeping its inbox.
+   * @param sessionId - target session on the writer node.
+   * @returns acceptance, or a structured failure.
+   */
+  cancelSession(sessionId: SessionId): Promise<SessionCancelResult> {
+    return this.controlRpc(
+      this.pendingCancels,
+      requestId => ({ type: 'session/cancel', requestId, sessionId }),
+      () => ({ ok: false, code: 'disconnected', message: 'federation client is not connected' }),
+      timeoutMs => ({ ok: false, code: 'timeout', message: `session cancel timed out after ${timeoutMs}ms` }),
+    )
+  }
+
+  /**
+   * Select the model a writer-node session runs its next steps on, over the
+   * hub connection.
+   * @param sessionId - target session on the writer node.
+   * @param selection - provider/model/effort to apply for the next request.
+   * @returns applied selection, or a structured failure.
+   */
+  selectModelSession(
+    sessionId: SessionId,
+    selection: FederatedModelSelection,
+  ): Promise<SessionSelectModelResult> {
+    return this.controlRpc(
+      this.pendingSelectModels,
+      requestId => ({ type: 'session/select-model', requestId, sessionId, selection }),
+      () => ({ ok: false, code: 'disconnected', message: 'federation client is not connected' }),
+      timeoutMs => ({ ok: false, code: 'timeout', message: `session model selection timed out after ${timeoutMs}ms` }),
+    )
+  }
+
+  /**
    * Upload a locally-spooled event batch to hub persistence.
    * @param sessionId - session whose log is being uploaded.
    * @param events - contiguous events to append.
    * @param header - session header when the hub has not materialized this session.
    * @returns last stored seq, or a structured failure.
    */
-  persistSession(
-    sessionId: SessionId,
+  persistSession(    sessionId: SessionId,
     events: SessionEvent[],
     header?: SessionHeader,
   ): Promise<SessionPersistResult> {
@@ -721,6 +836,9 @@ export class FederationPodClient {
     this.rejectPendingPersists('federation client is not connected')
     this.rejectPendingLeases('federation client is not connected')
     this.rejectPendingCapabilities('federation client is not connected')
+    this.failPendingControl(this.pendingQueueUpdates, message => ({ ok: false as const, code: 'disconnected' as const, message }))
+    this.failPendingControl(this.pendingCancels, message => ({ ok: false as const, code: 'disconnected' as const, message }))
+    this.failPendingControl(this.pendingSelectModels, message => ({ ok: false as const, code: 'disconnected' as const, message }))
     this.abortPendingInteractions()
     this.scheduleReconnect()
   }
@@ -746,6 +864,18 @@ export class FederationPodClient {
       clearTimeout(pending.timer)
       pending.resolve({ ok: false, code: 'disconnected', message })
       this.pendingLeases.delete(id)
+    }
+  }
+
+  /** Resolve every pending entry of one routed-control map with a structured failure. */
+  private failPendingControl<T>(
+    pending: Map<string, { resolve: (result: T) => void; timer: NodeJS.Timeout }>,
+    buildFailure: (message: string) => T,
+  ): void {
+    for (const [id, entry] of pending) {
+      clearTimeout(entry.timer)
+      entry.resolve(buildFailure('federation client is not connected'))
+      pending.delete(id)
     }
   }
 
@@ -877,6 +1007,41 @@ export class FederationPodClient {
           ok: false,
           code,
           message: msg.error ?? 'session send failed',
+        })
+        break
+      }
+      case 'session/queue-update-result': {
+        const pending = this.pendingQueueUpdates.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingQueueUpdates.delete(msg.requestId)
+        pending.resolve(FederationPodClient.controlReply(msg.accepted, msg.code, msg.error, 'session queue update failed'))
+        break
+      }
+      case 'session/cancel-result': {
+        const pending = this.pendingCancels.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingCancels.delete(msg.requestId)
+        pending.resolve(FederationPodClient.controlReply(msg.accepted, msg.code, msg.error, 'session cancel failed'))
+        break
+      }
+      case 'session/select-model-result': {
+        const pending = this.pendingSelectModels.get(msg.requestId)
+        if (pending === undefined) break
+        clearTimeout(pending.timer)
+        this.pendingSelectModels.delete(msg.requestId)
+        if (msg.selected !== undefined && msg.code === undefined) {
+          pending.resolve({ ok: true, selected: msg.selected })
+          break
+        }
+        const selectCode = msg.code === 'writer-offline' || msg.code === 'unauthorized' || msg.code === 'invalid'
+          ? msg.code
+          : 'invalid'
+        pending.resolve({
+          ok: false,
+          code: selectCode,
+          message: msg.error ?? 'session model selection failed',
         })
         break
       }

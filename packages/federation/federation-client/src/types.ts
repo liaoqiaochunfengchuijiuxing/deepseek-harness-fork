@@ -205,6 +205,122 @@ export type SessionSendResult =
   | { ok: true; messageId: string }
   | { ok: false; code: 'disconnected' | 'timeout' | 'writer-offline' | 'unauthorized' | 'invalid'; message: string }
 
+/**
+ * Model selection carried by {@link FederationSessionSelectModelPayload}.
+ * `reasoningEffort` stays a plain string on the wire; the writer node
+ * validates it against its own reasoning-effort vocabulary.
+ */
+export interface FederatedModelSelection {
+  /** Registered provider route on the writer node. */
+  provider: string
+  /** Provider-owned model id. */
+  model: string
+  /** Adapter-owned reasoning effort when selected. */
+  reasoningEffort?: string
+}
+
+/** Failure codes shared by the routed session-control RPCs. */
+export type SessionControlErrorCode = 'disconnected' | 'timeout' | 'writer-offline' | 'unauthorized' | 'invalid'
+
+/** Outcome of a routed queue update. */
+export type SessionQueueUpdateResult =
+  | { ok: true; accepted: true }
+  | { ok: false; code: SessionControlErrorCode; message: string }
+
+/** Outcome of a routed cancellation. */
+export type SessionCancelResult =
+  | { ok: true; accepted: true }
+  | { ok: false; code: SessionControlErrorCode; message: string }
+
+/** Outcome of a routed model selection. */
+export type SessionSelectModelResult =
+  | { ok: true; selected: FederatedModelSelection }
+  | { ok: false; code: SessionControlErrorCode; message: string }
+
+/** Mutate one queued inbox item on the writer node. */
+export interface FederationSessionQueueUpdatePayload {
+  /** Discriminant message type tag. */
+  type: 'session/queue-update'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** Queued message id to operate on. */
+  itemId: string
+  /**
+   * Mutation to apply: drop the item, re-deliver it as steering input for the
+   * running step, or replace its text content in place.
+   */
+  action:
+    | { kind: 'remove' }
+    | { kind: 'steer' }
+    | { kind: 'edit'; content: ContentBlock[] }
+}
+
+/** Result of a {@link FederationSessionQueueUpdatePayload}. */
+export interface FederationSessionQueueUpdateResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/queue-update-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Whether the mutation applied. */
+  accepted?: boolean
+  /** Failure code when the mutation did not apply. */
+  code?: 'writer-offline' | 'unauthorized' | 'invalid'
+  /** Failure message when the mutation did not apply. */
+  error?: string
+}
+
+/** Cancel the running turn of a writer-node session, keeping its inbox. */
+export interface FederationSessionCancelPayload {
+  /** Discriminant message type tag. */
+  type: 'session/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+}
+
+/** Result of a {@link FederationSessionCancelPayload}. */
+export interface FederationSessionCancelResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/cancel-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Whether the cancellation was delivered to a writer. */
+  accepted?: boolean
+  /** Failure code when the cancellation was not delivered. */
+  code?: 'writer-offline' | 'unauthorized' | 'invalid'
+  /** Failure message when the cancellation was not delivered. */
+  error?: string
+}
+
+/** Select the model a writer-node session runs its next steps on. */
+export interface FederationSessionSelectModelPayload {
+  /** Discriminant message type tag. */
+  type: 'session/select-model'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** Selection to apply for the next admitted request. */
+  selection: FederatedModelSelection
+}
+
+/** Result of a {@link FederationSessionSelectModelPayload}. */
+export interface FederationSessionSelectModelResultPayload {
+  /** Discriminant message type tag. */
+  type: 'session/select-model-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Applied selection when the switch succeeded. */
+  selected?: FederatedModelSelection
+  /** Failure code when the switch did not apply. */
+  code?: 'writer-offline' | 'unauthorized' | 'invalid'
+  /** Failure message when the switch did not apply. */
+  error?: string
+}
+
 /** Closed approval outcomes accepted on the federation wire. */
 const APPROVAL_OUTCOMES: readonly ApprovalOutcome[] = ['allowed-once', 'rejected', 'cancelled', 'unavailable']
 
@@ -407,6 +523,12 @@ export type FederationClientWireMessage =
   | RemoteSubagentAbortPayload
   | FederationSessionSendPayload
   | FederationSessionSendResultPayload
+  | FederationSessionQueueUpdatePayload
+  | FederationSessionQueueUpdateResultPayload
+  | FederationSessionCancelPayload
+  | FederationSessionCancelResultPayload
+  | FederationSessionSelectModelPayload
+  | FederationSessionSelectModelResultPayload
   | FederationApprovalRequestPayload
   | FederationApprovalResultPayload
   | FederationApprovalCancelPayload

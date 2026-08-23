@@ -4,7 +4,7 @@ import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SessionStore from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
-import { createApiRemoteAgentResolver, inspectApiRemoteSession } from '@deepseek-ai/dsh-api-remotes'
+import { createApiRemoteAgentResolver, inspectApiRemoteAuthority, inspectApiRemoteSession } from '@deepseek-ai/dsh-api-remotes'
 import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 
@@ -111,7 +111,7 @@ describe('API Remote Agent resolver races', () => {
     }
   })
 
-  it('materializes a session-source session before cold resume for both remote shapes', async () => {
+  it('refuses every session-source shape instead of materializing and resuming it', async () => {
     const shapes = [
       { name: 'wrapped-with-id', wrap: true, sourceId: 'federation-hub' },
       { name: 'wrapped', wrap: true, sourceId: undefined },
@@ -137,26 +137,25 @@ describe('API Remote Agent resolver races', () => {
           ? { source: { id: shape.sourceId }, session: { header: meta, events } }
           : { header: meta, events }),
       } as never)
-      let published: Session | undefined
-      vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
-        published = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
-        return { agent: stubAgent(ctx, published), dispose: () => Promise.resolve() }
-      })
+      const resume = vi.spyOn(ctx.agents, 'resume')
 
       const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
 
-      expect(result).toMatchObject({ agent: { id: sessionId } })
-      // A source that identifies itself stamps the materialized copy with its
-      // id so later catch-ups read through it instead of the registry scan.
-      expect(created).toEqual([shape.sourceId === undefined ? meta : { ...meta, remoteAuthority: shape.sourceId }])
-      expect(appended).toEqual([events])
+      // Execution stays on the owning node: no local writer attaches, and
+      // nothing materializes — including sources that name themselves nowhere.
+      expect(result).toMatchObject({ error: { code: 'internal' } })
+      if (!('error' in result)) throw new Error('expected the routed-session refusal')
+      expect(result.error.message).toContain('route operations through its owning node')
+      expect(created).toEqual([])
+      expect(appended).toEqual([])
+      expect(resume).not.toHaveBeenCalled()
       await ctx.fiber.dispose()
     }
   })
 
-  it('appends the remote suffix to an already-materialized stale copy', async () => {
+  it('resumes an unstamped local row without merging remote-source growth into it', async () => {
     const ctx = await createContext()
-    const sessionId = sid('stale-materialized')
+    const sessionId = sid('unstamped-local')
     const meta = header(sessionId)
     const base = [
       { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
@@ -185,11 +184,13 @@ describe('API Remote Agent resolver races', () => {
     const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
 
     expect(result).toMatchObject({ agent: { id: sessionId } })
-    expect(appended).toEqual([growth])
+    // The local row owns this identity; cross-node log merges are lease work,
+    // not a resume side effect.
+    expect(appended).toEqual([])
     await ctx.fiber.dispose()
   })
 
-  it('targets the stamped authority when resuming a stale materialized copy', async () => {
+  it('refuses a stale stamped copy after its offline cache caught up through the authority', async () => {
     const ctx = await createContext()
     const sessionId = sid('authority-resume')
     const meta = { ...header(sessionId), remoteAuthority: 'federation-hub' }
@@ -210,18 +211,18 @@ describe('API Remote Agent resolver races', () => {
     } as never)
     const getSession = vi.fn().mockResolvedValue({ source: { id: 'federation-hub' }, session: { header: meta, events: [...base, ...growth] } })
     ctx.provide('sessionSources', { getSession } as never)
-    vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
-      const session = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
-      return { agent: stubAgent(ctx, session), dispose: () => Promise.resolve() }
-    })
+    const resume = vi.spyOn(ctx.agents, 'resume')
 
     const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
 
-    expect(result).toMatchObject({ agent: { id: sessionId } })
-    // The catch-up asks the stamped source directly: the registry scan would
-    // answer with the stale local copy through a registered local source.
+    expect(result).toMatchObject({ error: { code: 'internal' } })
+    if (!('error' in result)) throw new Error('expected the routed-session refusal')
+    expect(result.error.message).toContain('"federation-hub"')
+    // The refusal follows the cache refresh: the offline snapshot stays fresh
+    // even though no writer may attach.
     expect(getSession).toHaveBeenCalledWith(sessionId, 'federation-hub')
     expect(appended).toEqual([growth])
+    expect(resume).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 
@@ -254,6 +255,38 @@ describe('API Remote Agent resolver races', () => {
     expect(inspected.events).toEqual([...base, ...growth])
     expect(store).toEqual([...base, ...growth])
     await ctx.fiber.dispose()
+  })
+
+  it('classifies execution authority: stamped row, unstamped row, and source-only identity', async () => {
+    // A stamped materialized copy answers from its stamp without a scan.
+    const stamped = await createContext()
+    const stampedId = sid('authority-stamped-row')
+    provideSession(stamped, { ...header(stampedId), remoteAuthority: 'federation-hub' }, () =>
+      Promise.resolve({ meta: header(stampedId), events: [] }))
+    expect(await inspectApiRemoteAuthority(stamped, stampedId)).toBe('federation-hub')
+    await stamped.fiber.dispose()
+
+    // An unstamped local row means this node owns the identity.
+    const local = await createContext()
+    const localId = sid('authority-local-row')
+    provideSession(local, header(localId), () => Promise.resolve({ meta: header(localId), events: [] }))
+    local.provide('sessionSources', {
+      getSession: () => Promise.resolve({ source: { id: 'elsewhere' }, session: { header: header(localId), events: [] } }),
+    } as never)
+    expect(await inspectApiRemoteAuthority(local, localId)).toBeUndefined()
+    await local.fiber.dispose()
+
+    // No local row: the aggregate scan answers with the owning source.
+    const remoteOnly = await createContext()
+    const remoteId = sid('authority-source-only')
+    remoteOnly.provide('sessionSources', {
+      getSession: (id: SessionId) => Promise.resolve(
+        id === remoteId
+          ? { source: { id: 'federation-hub' }, session: { header: { ...header(remoteId), cwd: undefined }, events: [] } }
+          : undefined),
+    } as never)
+    expect(await inspectApiRemoteAuthority(remoteOnly, remoteId)).toBe('federation-hub')
+    await remoteOnly.fiber.dispose()
   })
 
   it('serves the stale stamped copy when the authority is unavailable', async () => {

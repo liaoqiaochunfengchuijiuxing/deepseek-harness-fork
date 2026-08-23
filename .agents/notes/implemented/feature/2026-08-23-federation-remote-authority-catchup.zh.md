@@ -4,6 +4,8 @@ Status: implemented
 
 [English](2026-08-23-federation-remote-authority-catchup.md) | 中文
 
+> 部分被[路由式会话执行](2026-08-23-federation-routed-session-execution.md)取代：物化与本地 resume 已退役，标记及其追赶仅作为离线缓存读路径保留。
+
 ## 问题
 
 pod 打开 hub 会话时会把它物化到本地持久层（resume 路径的 `persistence.create` + `append`），好让 `agents.resume` 能从本地存储准备。此后该 pod 的读取就被冻结在物化时刻：`inspectApiRemoteSession` 在之后每次 history 读取都返回本地副本，而设计中的追赶机制（经 `sessionSources` 聚合服务的 `readRemoteSession`）也永远看不到 hub——聚合服务按注册顺序扫描各源，pod 的本地源最先命中并返回同一份过期副本。线上实测：hub 会话增长到 990 个事件，pod 视角停在 517，没有任何收敛路径。
@@ -31,3 +33,5 @@ resume 路径自己的追赶分支现在区分两种情况：带标记的副本�
 ## 后果
 
 hub 会话增长后，pod 的视角在下一次读取即收敛，无需重新物化。分叉保持其单写者语义：pod 写入过的副本（在 pod 上续跑的 hub 会话）无法通过深等值前缀校验，按原样返回。两个限制是有意的：生成中途的物化可能分叉（resume 会用本地收尾事件修复悬空的 step/turn，永远无法前缀匹配 hub 的真实续写——调和它属于推迟的租约协议工作），且本变更之前物化的副本没有标记，运维需要删一次这类副本，让下次打开重新物化出带标记的副本。
+
+[路由式会话执行](2026-08-23-federation-routed-session-execution.md)落地后，不再产生新的物化副本：`agentFor` 拒绝一切非本地持有的身份，本 note 的追赶只在 `inspectApiRemoteSession` 中运行，作为既有副本的离线缓存读。

@@ -517,6 +517,30 @@ getActiveTaskCount(): number
 sendToSession( sessionId: SessionId, content: ContentBlock[], clientMessageId: string, ): Promise<SessionSendResult>
 
 /**
+ * Mutate one queued inbox item on the writer node.
+ * @param sessionId - target session on the writer node.
+ * @param itemId - queued message id to operate on.
+ * @param action - drop, steer, or text-edit mutation.
+ * @returns acceptance, or a structured failure.
+ */
+queueUpdateSession( sessionId: SessionId, itemId: string, action: { kind: 'remove' } | { kind: 'steer' } | { kind: 'edit'; content: ContentBlock[] }, ): Promise<SessionQueueUpdateResult>
+
+/**
+ * Cancel the running turn of a writer-node session, keeping its inbox.
+ * @param sessionId - target session on the writer node.
+ * @returns acceptance, or a structured failure.
+ */
+cancelSession(sessionId: SessionId): Promise<SessionCancelResult>
+
+/**
+ * Select the model a writer-node session runs its next steps on.
+ * @param sessionId - target session on the writer node.
+ * @param selection - provider/model/effort to apply for the next request.
+ * @returns applied selection, or a structured failure.
+ */
+selectModelSession( sessionId: SessionId, selection: FederatedModelSelection, ): Promise<SessionSelectModelResult>
+
+/**
  * Upload a locally-spooled event batch to hub persistence.
  * @param sessionId - session whose log is being uploaded.
  * @param events - contiguous events to append.
@@ -564,7 +588,7 @@ getPeerDirectEndpoints(): Map<string, string>
 
 Types: [ContentBlock](llm-streaming.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionId](core.md)
 
-Source: [`packages/federation/federation-client/src/service.ts:30`](../../packages/federation/federation-client/src/service.ts)
+Source: [`packages/federation/federation-client/src/service.ts:34`](../../packages/federation/federation-client/src/service.ts)
 
 <a id="ctxfederationhub--federationhubservice"></a>
 
@@ -579,6 +603,16 @@ Service managing connected pods and message routing across the federation hub.
  * from plugin apply so `inject` waits for them.
  */
 bindInteractionBridges(): void
+
+/**
+ * Bind the writer source used by routed session control. The host gateway
+ * calls this with its shared agent resolver so `session/send` cold-starts
+ * and model switches apply through the same composition the hub's own Web
+ * RPC path uses. Without a source, sends to sessions with no live agent
+ * fail with `writer-offline` as before.
+ * @param source - the host gateway's writer factory.
+ */
+bindWriterSource(source: FederationWriterSource): void
 
 /**
  * List all currently registered pods.
@@ -700,7 +734,7 @@ leaseHolder(sessionId: SessionId): string | undefined
 
 Types: [ApprovalOutcome](approval.md) · [ApprovalRequest](approval.md) · [AskUserQuestionAnswer](user-questions.md) · [AskUserQuestionRequest](user-questions.md) · [SessionId](core.md)
 
-Source: [`packages/federation/federation-hub/src/service.ts:124`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:163`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="ctxsubagents--subagentruntime"></a>
 
@@ -909,7 +943,7 @@ Answer a hub-forwarded approval for a session this pod commands. Return an outco
 
 Types: [ApprovalOutcome](approval.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:64`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:69`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="federationpod-offline--emit"></a>
 
@@ -926,7 +960,7 @@ Emitted when a registered pod is marked offline due to heartbeat timeout or sock
 'federation/pod-offline': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:65`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:70`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-registered--emit"></a>
 
@@ -943,7 +977,7 @@ Emitted when a pod completes handshake and registers with the hub.
 'federation/pod-registered': (pod: PodInfo) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:59`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:64`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationpod-unregistered--emit"></a>
 
@@ -960,7 +994,7 @@ Emitted when a pod is explicitly removed from the registry.
 'federation/pod-unregistered': (podId: string) => void
 ```
 
-Source: [`packages/federation/federation-hub/src/service.ts:71`](../../packages/federation/federation-hub/src/service.ts)
+Source: [`packages/federation/federation-hub/src/service.ts:76`](../../packages/federation/federation-hub/src/service.ts)
 
 <a id="federationquestion-request--waterfall"></a>
 
@@ -980,7 +1014,7 @@ Answer a hub-forwarded user question for a session this pod commands. Return an 
 
 Types: [AskUserQuestionAnswer](user-questions.md)
 
-Source: [`packages/federation/federation-client/src/client.ts:74`](../../packages/federation/federation-client/src/client.ts)
+Source: [`packages/federation/federation-client/src/client.ts:79`](../../packages/federation/federation-client/src/client.ts)
 
 <a id="subagent-events"></a>
 

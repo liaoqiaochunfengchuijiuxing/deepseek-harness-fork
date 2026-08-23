@@ -12,9 +12,13 @@ import type { FederationPodClient } from './client.ts'
 import type {
   CapabilityRequestPayload,
   CapabilityResult,
+  FederatedModelSelection,
   PodConnectionStatus,
+  SessionCancelResult,
   SessionLeaseResult,
   SessionPersistResult,
+  SessionQueueUpdateResult,
+  SessionSelectModelResult,
   SessionSendResult,
 } from './types.ts'
 
@@ -72,6 +76,43 @@ export class FederationClientService extends Service {
     clientMessageId: string,
   ): Promise<SessionSendResult> {
     return this.client.sendToSession(sessionId, content, clientMessageId)
+  }
+
+  /**
+   * Mutate one queued inbox item on the writer node.
+   * @param sessionId - target session on the writer node.
+   * @param itemId - queued message id to operate on.
+   * @param action - drop, steer, or text-edit mutation.
+   * @returns acceptance, or a structured failure.
+   */
+  queueUpdateSession(
+    sessionId: SessionId,
+    itemId: string,
+    action: { kind: 'remove' } | { kind: 'steer' } | { kind: 'edit'; content: ContentBlock[] },
+  ): Promise<SessionQueueUpdateResult> {
+    return this.client.queueUpdateSession(sessionId, itemId, action)
+  }
+
+  /**
+   * Cancel the running turn of a writer-node session, keeping its inbox.
+   * @param sessionId - target session on the writer node.
+   * @returns acceptance, or a structured failure.
+   */
+  cancelSession(sessionId: SessionId): Promise<SessionCancelResult> {
+    return this.client.cancelSession(sessionId)
+  }
+
+  /**
+   * Select the model a writer-node session runs its next steps on.
+   * @param sessionId - target session on the writer node.
+   * @param selection - provider/model/effort to apply for the next request.
+   * @returns applied selection, or a structured failure.
+   */
+  selectModelSession(
+    sessionId: SessionId,
+    selection: FederatedModelSelection,
+  ): Promise<SessionSelectModelResult> {
+    return this.client.selectModelSession(sessionId, selection)
   }
 
   /**

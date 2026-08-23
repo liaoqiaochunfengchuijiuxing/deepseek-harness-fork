@@ -54,6 +54,21 @@ export class ApiRemoteSubagentSessionOwnership extends Error {
   }
 }
 
+/** Session identity that executes on a remote node and must not gain a local writer. */
+export class ApiRemoteRoutedSession extends Error {
+  /**
+   * Construct the routed-execution fence.
+   * @param sessionId - identity owned by the remote node.
+   * @param authority - the owning remote source id.
+   */
+  constructor(
+    readonly sessionId: SessionId,
+    readonly authority: string,
+  ) {
+    super(`session "${sessionId}" executes on "${authority}"; route operations through its owning node`)
+  }
+}
+
 /**
  * Test whether generic Host routing must leave an identity to subagent routing.
  * @param ctx - Host Context carrying the live Agent registry.
@@ -179,6 +194,32 @@ async function catchUpMaterializedCopy(
 }
 
 /**
+ * Report which remote source owns a session's execution, without resuming or
+ * repairing anything. A locally persisted row answers from its
+ * {@link SessionHeader.remoteAuthority} stamp (a stamped copy stays an
+ * offline cache); an unstamped local row means this node owns the session;
+ * otherwise the aggregate source scan answers with the first remote source
+ * that knows the identity.
+ * @param ctx - Host Context carrying the optional persistence and
+ *   session-sources services.
+ * @param sessionId - identity to classify.
+ * @returns the owning remote source id, or undefined when the session is
+ *   local or unknown.
+ */
+export async function inspectApiRemoteAuthority(
+  ctx: Context,
+  sessionId: SessionId,
+): Promise<string | undefined> {
+  const persistence = ctx.get('sessionPersistence') as { list(): Promise<SessionHeader[]> } | undefined
+  if (persistence !== undefined) {
+    const localMeta = (await persistence.list()).find(candidate => candidate.id === sessionId)
+    if (localMeta !== undefined) return localMeta.remoteAuthority
+  }
+  const remote = await readRemoteSession(ctx, sessionId)
+  return remote?.sourceId
+}
+
+/**
  * Inspect one cold served session without repairing, resuming, or publishing it.
  * A materialized copy (stamped {@link SessionHeader.remoteAuthority}) catches
  * up to its authority's log first, so reads never serve a prefix the authority
@@ -263,6 +304,27 @@ export function createApiRemoteAgentResolver(
           if (hasApiRemoteSubagentOwner(ctx, { header: inspected.meta }, undefined)) {
             throw new ApiRemoteSubagentSessionOwnership(sessionId)
           }
+          // A remote-authority session executes on its owning node; attaching
+          // a local writer would migrate execution and strand the log. Reads
+          // serve detached (or from the offline cache), writes route through
+          // the session's federation channel, and this refusal is the safety
+          // net for any verb that reaches the resolver unguarded. A session
+          // absent from the local durable store but known to a source is
+          // equally remote, even when that source names itself nowhere.
+          const localRows = ctx.get('sessionPersistence') as
+            | { list(): Promise<SessionHeader[]> }
+            | undefined
+          const knownLocally = localRows === undefined
+            || (await localRows.list()).some(candidate => candidate.id === sessionId)
+          if (!knownLocally) {
+            throw new ApiRemoteRoutedSession(
+              sessionId,
+              inspected.meta.remoteAuthority ?? 'an unattributed remote source',
+            )
+          }
+          if (inspected.meta.remoteAuthority !== undefined) {
+            throw new ApiRemoteRoutedSession(sessionId, inspected.meta.remoteAuthority)
+          }
           // Built from the inspected session before the published re-checks
           // below, so those stay adjacent to `resume` and a Host setup that
           // awaits (composing a preset, say) does not widen the collision
@@ -273,31 +335,6 @@ export function createApiRemoteAgentResolver(
           if (publishedSession !== undefined
             && hasApiRemoteSubagentOwner(ctx, publishedSession, publishedAgent)) {
             throw new ApiRemoteSubagentSessionOwnership(sessionId)
-          }
-          // `agents.resume` prepares from the local durable store only, so a
-          // session whose events live in a remote source must be materialized
-          // locally before resume. A stamped copy (`remoteAuthority`, set on
-          // materialization when the answering source identifies itself) was
-          // already caught up by the `inspectApiRemoteSession` call above,
-          // which reads through the stamp instead of the registry scan (a
-          // registered local source would answer the scan with the stale copy
-          // itself); an unstamped local copy keeps the registry-scan catch-up
-          // for compositions without a shadowing local source.
-          const persistence = ctx.get('sessionPersistence') as SessionPersistenceLike | undefined
-          if (persistence !== undefined) {
-            const list = await persistence.list()
-            const localMeta = list.find(candidate => candidate.id === sessionId)
-            if (localMeta === undefined) {
-              await persistence.create(inspected.meta)
-              if (inspected.events.length > 0) {
-                await persistence.append(sessionId, inspected.events)
-              }
-            } else if (localMeta.remoteAuthority === undefined) {
-              const remote = await readRemoteSession(ctx, sessionId)
-              if (remote !== undefined) {
-                await appendRemoteSuffix(persistence, sessionId, remote.events)
-              }
-            }
           }
           const handle = await ctx.agents.resume({
             resumeSessionId: sessionId,
@@ -319,6 +356,15 @@ export function createApiRemoteAgentResolver(
       }
       if (error instanceof ApiRemoteSubagentSessionOwnership) {
         return { error: apiRemoteSubagentOwnershipError(error.sessionId) }
+      }
+      if (error instanceof ApiRemoteRoutedSession) {
+        return {
+          error: {
+            code: 'internal',
+            message: `session "${error.sessionId}" executes on "${error.authority}"; route operations through its owning node`,
+            details: {},
+          },
+        }
       }
       const fenced = fencedLiveAgent(sessionId)
       if (fenced !== undefined) return fenced

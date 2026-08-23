@@ -1,6 +1,6 @@
 # Hub-Pod 联邦 TODO
 
-执行清单，任务定义与验收见 [TASKS.md](TASKS.md)。勾选一个任务前确认其"依赖"列全部完成。从 T5.2 续做：先读 [HANDOFF.md](HANDOFF.md)（当前树状态、推荐 wire、包布局、陷阱）。
+执行清单，任务定义与验收见 [TASKS.md](TASKS.md)。勾选一个任务前确认其"依赖"列全部完成。从路由式执行阶段 3 续做：先读 [HANDOFF.md](HANDOFF.md)（当前树状态、下一任务、陷阱）。
 
 ## M0 前置（已完成）
 
@@ -44,7 +44,14 @@
 
 - [x] T5.1 hub 中继 pod↔pod
 - [x] T5.2 capability-server 粒度（remote fs/subprocess）
-- [x] T5.3 直连优化（overlay 网络下跳过 hub 中继）
+- [x] T5.3 直连优化（overlay 网络下跳过 hub 中继，直连不可达回退 hub 中继）
+
+## MR 路由式执行（提案，[2026-08-23](../.agents/notes/proposed/feature/2026-08-23-federation-routed-execution.zh.md)）
+
+- [x] R1 阶段 1：实时视图（读路径）——pod 打开 hub 会话逐事件实时一致
+- [x] R2 阶段 2：执行路由（写路径）——prompt/queue/cancel/select-model 联邦转发 + writer 冷启动 + 接管退役
+- [ ] R3 阶段 3：跨 pod 操作（所有者路由）——所有权注册表、pod-owned 远端源、`session/stream-forward`、owner-offline
+- [ ] R? 决策 3A 尾巴：物化副本物理清除需 persistence seam 的 delete（档位③，先重审）
 
 ## 完成定义（里程碑级）
 

@@ -339,6 +339,113 @@ export function roleAllowsCommand(role: FederationTokenRole): boolean {
   }
 }
 
+/**
+ * Model selection carried by {@link FederationSessionSelectModelMessage}.
+ * `reasoningEffort` stays a plain string on the wire; the writer node
+ * validates it against its own reasoning-effort vocabulary.
+ */
+export interface FederatedModelSelection {
+  /** Registered provider route on the writer node. */
+  provider: string
+  /** Provider-owned model id. */
+  model: string
+  /** Adapter-owned reasoning effort when selected. */
+  reasoningEffort?: string
+}
+
+/**
+ * Failure codes shared by the routed session-control results
+ * (`session/queue-update-result`, `session/cancel-result`,
+ * `session/select-model-result`). `writer-offline` covers both a session no
+ * writer source can resume and a resume that failed; the message text
+ * distinguishes them.
+ */
+export type FederationSessionControlErrorCode = 'writer-offline' | 'unauthorized' | 'invalid'
+
+/** Mutate one queued inbox item on the writer node. */
+export interface FederationSessionQueueUpdateMessage {
+  /** Discriminant message tag. */
+  type: 'session/queue-update'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** Queued message id to operate on. */
+  itemId: string
+  /**
+   * Mutation to apply: drop the item, re-deliver it as steering input for the
+   * running step, or replace its text content in place.
+   */
+  action:
+    | { kind: 'remove' }
+    | { kind: 'steer' }
+    | { kind: 'edit'; content: ContentBlock[] }
+}
+
+/** Result of a {@link FederationSessionQueueUpdateMessage}. */
+export interface FederationSessionQueueUpdateResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/queue-update-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Whether the mutation applied. */
+  accepted?: boolean
+  /** Failure code when the mutation did not apply. */
+  code?: FederationSessionControlErrorCode
+  /** Failure message when the mutation did not apply. */
+  error?: string
+}
+
+/** Cancel the running turn of a writer-node session, keeping its inbox. */
+export interface FederationSessionCancelMessage {
+  /** Discriminant message tag. */
+  type: 'session/cancel'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+}
+
+/** Result of a {@link FederationSessionCancelMessage}. */
+export interface FederationSessionCancelResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/cancel-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Whether the cancellation was delivered to a writer. */
+  accepted?: boolean
+  /** Failure code when the cancellation was not delivered. */
+  code?: FederationSessionControlErrorCode
+  /** Failure message when the cancellation was not delivered. */
+  error?: string
+}
+
+/** Select the model a writer-node session runs its next steps on. */
+export interface FederationSessionSelectModelMessage {
+  /** Discriminant message tag. */
+  type: 'session/select-model'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Target session on the writer node. */
+  sessionId: SessionId
+  /** Selection to apply for the next admitted request. */
+  selection: FederatedModelSelection
+}
+
+/** Result of a {@link FederationSessionSelectModelMessage}. */
+export interface FederationSessionSelectModelResultMessage {
+  /** Discriminant message tag. */
+  type: 'session/select-model-result'
+  /** Correlating request identifier. */
+  requestId: string
+  /** Applied selection when the switch succeeded. */
+  selected?: FederatedModelSelection
+  /** Failure code when the switch did not apply. */
+  code?: FederationSessionControlErrorCode
+  /** Failure message when the switch did not apply. */
+  error?: string
+}
+
 /** Failure codes for {@link FederationSessionSendResultMessage}. */
 export type FederationSessionSendErrorCode = 'writer-offline' | 'unauthorized' | 'invalid'
 
@@ -592,6 +699,12 @@ export type FederationWireMessage =
   | FederationSessionUnsubscribeMessage
   | FederationSessionSendMessage
   | FederationSessionSendResultMessage
+  | FederationSessionQueueUpdateMessage
+  | FederationSessionQueueUpdateResultMessage
+  | FederationSessionCancelMessage
+  | FederationSessionCancelResultMessage
+  | FederationSessionSelectModelMessage
+  | FederationSessionSelectModelResultMessage
   | FederationApprovalRequestMessage
   | FederationApprovalResultMessage
   | FederationApprovalCancelMessage

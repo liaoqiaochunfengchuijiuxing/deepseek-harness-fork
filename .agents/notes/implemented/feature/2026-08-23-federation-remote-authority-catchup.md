@@ -4,6 +4,8 @@ Status: implemented
 
 English | [中文](2026-08-23-federation-remote-authority-catchup.zh.md)
 
+> Superseded in part by [routed session execution](2026-08-23-federation-routed-session-execution.md): materialization and local resume are retired, and the stamp plus its catch-up survive as the offline-cache read path only.
+
 ## Problem
 
 A pod that opens a hub session materializes it into local persistence (the resume path's `persistence.create` + `append`) so `agents.resume` can prepare from the local store. From then on the pod's reads were frozen at materialization time: `inspectApiRemoteSession` returns the local copy on every later history read, and the designed catch-up (`readRemoteSession` through the `sessionSources` aggregate) never saw the hub either — the aggregate scans sources in registration order and the pod's local source answers first with the same stale copy. Observed live: the hub's session grew to 990 events while a pod's view stayed at 517 with no path to converge.
@@ -31,3 +33,5 @@ Viewing must not attach a writer. The Web composer's model seat calls `session.m
 ## Consequences
 
 A pod's view of a hub session converges on the next read after the hub grows, without re-materializing. Divergence keeps its single-writer meaning: a copy the pod wrote to (a prompted hub session running on the pod) fails the deep-equal prefix check and is served as-is, exactly as before. Two limitations remain deliberate: mid-generation materialization can diverge (the resume repairs the dangling step/turn with local closers, which never prefix-match the hub's real continuation — reconciling that is the deferred lease-protocol work), and copies materialized before this change carry no stamp, so an operator deletes those once to let the next open re-materialize a stamped copy.
+
+Since [routed session execution](2026-08-23-federation-routed-session-execution.md) shipped, nothing materializes new copies: `agentFor` refuses every non-local identity, and this note's catch-up runs only in `inspectApiRemoteSession` as the offline-cache read for copies that already exist.

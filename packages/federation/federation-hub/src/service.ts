@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type WebSocket from 'ws'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { MessageId, createUserMessage, freezeMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
@@ -28,11 +28,16 @@ import {
   type CapabilityRequestMessage,
   type CapabilityResultMessage,
   type CapabilityStreamMessage,
+  type FederatedModelSelection,
   type FederationApprovalResultMessage,
   type FederationQuestionResultMessage,
+  type FederationSessionCancelMessage,
+  type FederationSessionControlErrorCode,
   type FederationSessionLeaseAcquireMessage,
   type FederationSessionLeaseReleaseMessage,
   type FederationSessionPersistMessage,
+  type FederationSessionQueueUpdateMessage,
+  type FederationSessionSelectModelMessage,
   type FederationSessionSendErrorCode,
   type FederationSessionSendMessage,
   type FederationTokenRole,
@@ -112,6 +117,40 @@ interface PendingCapabilityRpc {
   timer: NodeJS.Timeout
 }
 
+/**
+ * Resolution of one routed session-control writer lookup, structurally
+ * matching the host gateway's shared agent resolver result.
+ */
+export type FederationWriterResolution =
+  | { readonly agent: Agent }
+  | { readonly error: { readonly code: string; readonly message: string } }
+
+/**
+ * The hub-side writer factory for routed session control, bound by the host
+ * gateway so a cold session resumes through exactly the composition the
+ * hub's own Web RPC path composes.
+ */
+export interface FederationWriterSource {
+  /**
+   * Return the live agent for a hub-local session, resuming it when cold.
+   * @param sessionId - target session identity.
+   * @returns the live agent, or a structured lookup failure.
+   */
+  resolveWriter(sessionId: SessionId): Promise<FederationWriterResolution>
+  /**
+   * Apply one model selection to the session's writer through the host's own
+   * selection seat, so routed switches land in the same store local Web
+   * switches use.
+   * @param sessionId - target session identity.
+   * @param selection - provider/model/effort for the next admitted request.
+   * @returns the applied selection, or a structured failure message.
+   */
+  applySelection(
+    sessionId: SessionId,
+    selection: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<{ ok: true; selected: { provider: string; model: string; reasoningEffort?: string } } | { ok: false; message: string }>
+}
+
 /** Options for {@link FederationHubService}. */
 export interface FederationHubServiceOptions {
   /** Bound (ms) on an approval or question round-trip to the commanding pod. */
@@ -135,6 +174,7 @@ export class FederationHubService extends Service {
   private readonly capabilityStreams = new Map<string, (chunk: unknown, done?: boolean) => void>()
   private readonly relayedCapabilities = new Map<string, { originPodId: string; targetPodId: string }>()
   private readonly interactionTimeoutMs: number
+  private writerSource: FederationWriterSource | undefined
 
   /**
    * Create the hub service and bind optional approval/question bridges.
@@ -175,6 +215,44 @@ export class FederationHubService extends Service {
         /* v8 ignore stop */
       }, 'federation.hub.routeUserQuestions')
     })
+  }
+
+  /**
+   * Bind the writer source used by routed session control. The host gateway
+   * calls this with its shared agent resolver so `session/send` cold-starts
+   * and model switches apply through the same composition the hub's own Web
+   * RPC path uses. Without a source, sends to sessions with no live agent
+   * fail with `writer-offline` as before.
+   * @param source - the host gateway's writer factory.
+   */
+  bindWriterSource(source: FederationWriterSource): void {
+    this.writerSource = source
+  }
+
+  /**
+   * Resolve the live writer for a session, cold-starting it through the bound
+   * writer source when the session has no live agent.
+   * @param sessionId - target session identity.
+   * @returns the live agent, or a structured failure whose `code` is
+   *   `'session-not-found'` or `'writer-offline'`.
+   */
+  private async resolveWriter(sessionId: SessionId): Promise<FederationWriterResolution> {
+    const agents = this.ctx.get('agents') as { get(id: SessionId): Agent | undefined } | undefined
+    const live = agents?.get(sessionId)
+    if (live !== undefined) return { agent: live }
+    if (this.writerSource === undefined) {
+      return { error: { code: 'writer-offline', message: `no live writer for session ${sessionId} and no writer source is bound` } }
+    }
+    return await this.writerSource.resolveWriter(sessionId)
+  }
+
+  /**
+   * Map a writer-lookup failure onto a routed-control wire code: an unknown
+   * identity is a bad request; every other lookup or resume failure means no
+   * writer could be attached.
+   */
+  private controlFailureCode(code: string): 'invalid' | 'writer-offline' {
+    return code === 'session-not-found' ? 'invalid' : 'writer-offline'
   }
 
   /**
@@ -740,6 +818,18 @@ export class FederationHubService extends Service {
         void this.handleSessionSend(podId, message)
         break
       }
+      case 'session/queue-update': {
+        void this.handleSessionQueueUpdate(podId, message)
+        break
+      }
+      case 'session/cancel': {
+        void this.handleSessionCancel(podId, message)
+        break
+      }
+      case 'session/select-model': {
+        void this.handleSessionSelectModel(podId, message)
+        break
+      }
       case 'session/persist': {
         void this.handleSessionPersist(podId, message)
         break
@@ -839,19 +929,18 @@ export class FederationHubService extends Service {
 
     const sessionKey = String(message.sessionId)
     const idempotencyKey = `${sessionKey}:${message.clientMessageId}`
-    const run = (): void => {
+    const run = async (): Promise<void> => {
       try {
         const accepted = this.acceptedSends.get(idempotencyKey)
         if (accepted !== undefined) {
           this.replySessionSend(podId, message.requestId, { messageId: accepted })
           return
         }
-        const agents = this.ctx.get('agents') as { get(id: SessionId): Agent | undefined } | undefined
-        const agent = agents?.get(SessionId(message.sessionId))
-        if (agent === undefined) {
+        const resolved = await this.resolveWriter(SessionId(message.sessionId))
+        if ('error' in resolved) {
           this.replySessionSend(podId, message.requestId, {
-            code: 'writer-offline',
-            error: `writer is offline for session ${message.sessionId}`,
+            code: this.controlFailureCode(resolved.error.code),
+            error: resolved.error.message,
           })
           return
         }
@@ -859,7 +948,7 @@ export class FederationHubService extends Service {
           content: message.content,
           source: { kind: 'user' },
         })
-        agent.followup(userMessage)
+        resolved.agent.followup(userMessage)
         this.acceptedSends.set(idempotencyKey, userMessage.id)
         this.commanders.set(sessionKey, podId)
         this.replySessionSend(podId, message.requestId, { messageId: userMessage.id })
@@ -870,12 +959,267 @@ export class FederationHubService extends Service {
         })
       }
     }
+    await this.enqueueControl(sessionKey, run)
+  }
+
+  /**
+   * Serialize one routed session-control mutation onto the session's
+   * per-session chain, so sends, queue edits, cancellations, and model
+   * switches observe one order per session.
+   */
+  private enqueueControl(sessionKey: string, run: () => Promise<void>): Promise<void> {
     const prev = this.sendTails.get(sessionKey) ?? Promise.resolve()
-    const next = prev.then(() => {
-      run()
-    })
+    // Every run settles its own failures into a reply, so neither leg rejects.
+    const next = prev.then(run, run)
     this.sendTails.set(sessionKey, next)
-    await next
+    return next
+  }
+
+  /**
+   * Apply one pod queue mutation to the live-or-resumed writer's inbox.
+   * Mirrors the host gateway's `sessions.updateQueue` semantics: the item must
+   * still be queued, steering requires a running turn with a next-turn item,
+   * and edits replace text content in place.
+   * @param podId - sending pod.
+   * @param message - queue-update request.
+   */
+  private async handleSessionQueueUpdate(
+    podId: string,
+    message: FederationSessionQueueUpdateMessage,
+  ): Promise<void> {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+        code: 'unauthorized',
+        error: 'session queue update requires a command-capable token',
+      })
+      return
+    }
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0
+      || typeof message.itemId !== 'string' || message.itemId.length === 0
+      || !this.isControlAction(message.action)) {
+      this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+        code: 'invalid',
+        error: 'queue update requires sessionId, itemId, and a valid action',
+      })
+      return
+    }
+    if (message.action.kind === 'edit' && !this.isContentBlocks(message.action.content)) {
+      this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+        code: 'invalid',
+        error: 'queue edits accept non-empty content blocks only',
+      })
+      return
+    }
+    const sessionKey = String(message.sessionId)
+    await this.enqueueControl(sessionKey, async () => {
+      try {
+        const resolved = await this.resolveWriter(SessionId(message.sessionId))
+        if ('error' in resolved) {
+          this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+            code: this.controlFailureCode(resolved.error.code),
+            error: resolved.error.message,
+          })
+          return
+        }
+        const agent = resolved.agent
+        const target = agent.inbox.nextTurn.some(queued => queued.id === message.itemId)
+          ? 'next-turn'
+          : agent.inbox.nextStep.some(queued => queued.id === message.itemId) ? 'next-step' : undefined
+        const queued = target === undefined
+          ? undefined
+          : (target === 'next-turn' ? agent.inbox.nextTurn : agent.inbox.nextStep)
+            .find(candidate => candidate.id === message.itemId)
+        if (target === undefined || queued === undefined) {
+          this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+            code: 'invalid',
+            error: 'queued item is no longer pending',
+          })
+          return
+        }
+        if (message.action.kind === 'steer' && (target !== 'next-turn' || agent.status !== 'running')) {
+          this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+            code: 'invalid',
+            error: 'current turn no longer accepts steering',
+          })
+          return
+        }
+        if (message.action.kind === 'edit') {
+          agent.inbox.replace(MessageId(message.itemId), freezeMessage({ ...queued, content: message.action.content }))
+        } else {
+          agent.inbox.remove(MessageId(message.itemId))
+          if (message.action.kind === 'steer') agent.steer(queued)
+        }
+        this.commanders.set(sessionKey, podId)
+        this.replyControl(podId, 'session/queue-update-result', message.requestId, { accepted: true as const })
+      } catch (err: unknown) {
+        this.replyControl(podId, 'session/queue-update-result', message.requestId, {
+          code: 'invalid',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+  }
+
+  /**
+   * Cancel the running turn of the live-or-resumed writer for one session,
+   * keeping its inbox so queued messages survive.
+   * @param podId - sending pod.
+   * @param message - cancel request.
+   */
+  private async handleSessionCancel(
+    podId: string,
+    message: FederationSessionCancelMessage,
+  ): Promise<void> {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replyControl(podId, 'session/cancel-result', message.requestId, {
+        code: 'unauthorized',
+        error: 'session cancel requires a command-capable token',
+      })
+      return
+    }
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0) {
+      this.replyControl(podId, 'session/cancel-result', message.requestId, {
+        code: 'invalid',
+        error: 'session cancel requires sessionId',
+      })
+      return
+    }
+    const sessionKey = String(message.sessionId)
+    await this.enqueueControl(sessionKey, async () => {
+      try {
+        const resolved = await this.resolveWriter(SessionId(message.sessionId))
+        if ('error' in resolved) {
+          this.replyControl(podId, 'session/cancel-result', message.requestId, {
+            code: this.controlFailureCode(resolved.error.code),
+            error: resolved.error.message,
+          })
+          return
+        }
+        resolved.agent.cancel({ kind: 'user' }, { keepInbox: true })
+        this.commanders.set(sessionKey, podId)
+        this.replyControl(podId, 'session/cancel-result', message.requestId, { accepted: true as const })
+      } catch (err: unknown) {
+        this.replyControl(podId, 'session/cancel-result', message.requestId, {
+          code: 'invalid',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+  }
+
+  /**
+   * Apply one model selection to the session's writer through the bound
+   * writer source, so the switch lands in the same store the hub's own Web UI
+   * writes. Requires the writer source; a hub without one answers
+   * `writer-offline`.
+   * @param podId - sending pod.
+   * @param message - select-model request.
+   */
+  private async handleSessionSelectModel(
+    podId: string,
+    message: FederationSessionSelectModelMessage,
+  ): Promise<void> {
+    const record = this.pods.get(podId)
+    if (!record) return
+    if (!roleAllowsCommand(record.info.role)) {
+      this.replySelectModel(podId, message.requestId, {
+        code: 'unauthorized',
+        error: 'session model selection requires a command-capable token',
+      })
+      return
+    }
+    // The wire payload is untrusted: widen before the field checks.
+    const selection = message.selection as FederatedModelSelection | undefined
+    if (typeof message.sessionId !== 'string' || message.sessionId.length === 0
+      || selection === undefined
+      || typeof selection.provider !== 'string' || selection.provider.length === 0
+      || typeof selection.model !== 'string' || selection.model.length === 0
+      || (selection.reasoningEffort !== undefined && typeof selection.reasoningEffort !== 'string')) {
+      this.replySelectModel(podId, message.requestId, {
+        code: 'invalid',
+        error: 'model selection requires sessionId plus provider and model',
+      })
+      return
+    }
+    if (this.writerSource === undefined) {
+      this.replySelectModel(podId, message.requestId, {
+        code: 'writer-offline',
+        error: 'no writer source is bound on this hub',
+      })
+      return
+    }
+    const sessionKey = String(message.sessionId)
+    await this.enqueueControl(sessionKey, async () => {
+      try {
+        const applied = await this.writerSource?.applySelection(SessionId(message.sessionId), {
+          provider: selection.provider,
+          model: selection.model,
+          ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+        })
+        if (applied === undefined || !applied.ok) {
+          this.replySelectModel(podId, message.requestId, {
+            code: 'writer-offline',
+            error: applied?.message ?? 'the writer source refused the selection',
+          })
+          return
+        }
+        this.commanders.set(sessionKey, podId)
+        this.replySelectModel(podId, message.requestId, { selected: applied.selected })
+      } catch (err: unknown) {
+        this.replySelectModel(podId, message.requestId, {
+          code: 'invalid',
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    })
+  }
+
+  /** Whether `value` is one of the three routed queue mutations. */
+  private isControlAction(value: unknown): value is { kind: 'remove' } | { kind: 'steer' } | { kind: 'edit'; content: ContentBlock[] } {
+    if (typeof value !== 'object' || value === null) return false
+    const kind = (value as { kind?: unknown }).kind
+    return kind === 'remove' || kind === 'steer'
+      || (kind === 'edit' && Array.isArray((value as { content?: unknown }).content))
+  }
+
+  /** Send one routed-control reply frame when the pod socket is still open. */
+  private replyControl(
+    podId: string,
+    type: 'session/queue-update-result' | 'session/cancel-result',
+    requestId: string,
+    result: { accepted: true } | { code: FederationSessionControlErrorCode; error: string },
+  ): void {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return
+    record.socket.send(JSON.stringify({
+      type,
+      requestId,
+      ...('accepted' in result
+        ? { accepted: true as const }
+        : { code: result.code, error: result.error }),
+    }))
+  }
+
+  private replySelectModel(
+    podId: string,
+    requestId: string,
+    result:
+      | { selected: FederatedModelSelection }
+      | { code: FederationSessionControlErrorCode; error: string },
+  ): void {
+    const record = this.pods.get(podId)
+    if (!record || record.socket.readyState !== 1) return
+    record.socket.send(JSON.stringify({
+      type: 'session/select-model-result',
+      requestId,
+      ...('selected' in result
+        ? { selected: result.selected }
+        : { code: result.code, error: result.error }),
+    }))
   }
 
   /**

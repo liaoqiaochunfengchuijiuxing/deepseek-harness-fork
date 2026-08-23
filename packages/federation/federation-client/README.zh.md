@@ -13,7 +13,7 @@
 5. **任务中断与取消：** 监听 `subagent/abort` 消息，通过 `AbortController` 中断在途任务执行并清理资源。
 6. **`/remote_send`：** 当挂载了 `ctx.commands` 时，注册一条人类命令，把 `<sessionId> <message>` 经 `session/send` 送到写者节点 inbox。断线、未授权、写者离线与非法发送返回错误结果，不会把文本当作本地模型 prompt 提交。
 7. **审批与问询应答：** 处理 hub 转发的 `approval/request` 与 `question/request`。程序化的 `approvalAnswerer` / `questionAnswerer`，或 `federation/approval-request` / `federation/question-request` waterfall 监听器，在本 pod 上作答。没有应答者时 fail-closed（`unavailable` / 错误结果）。`approval/cancel` 与 `question/cancel` 中止本地等待。在途重复的 `requestId` 会合并且不会弹两次。
-8. **会话持久化与租约 RPC：** `ctx.federationClient.persistSession` 上传本地 spool 的事件批次；`leaseSession` 获取或释放 hub 写者租约。persist 载荷只携带会话 id、header 与事件——凭据不会出现在这条线上。
+8. **会话控制与持久化 RPC：** `ctx.federationClient.sendToSession` 投递用户消息；`queueUpdateSession`、`cancelSession`、`selectModelSession` 把一次 inbox 变更、取消或模型切换路由到写者节点（`session/queue-update` / `session/cancel` / `session/select-model`）。`persistSession` 上传本地 spool 的事件批次；`leaseSession` 获取或释放 hub 写者租约。控制与 persist 载荷只携带会话 id 与操作字段——凭据不会出现在这条线上。
 9. **`/fork_to_local` 与 `/push_to_hub`：** 当挂载了 `ctx.commands` 时，把 hub 会话复制进本地持久化，或把本地日志上传到 hub。fork 结果会说明会话连续性不是工作连续性。
 
 ## 配置项

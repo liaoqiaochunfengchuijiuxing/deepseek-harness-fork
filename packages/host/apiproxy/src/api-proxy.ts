@@ -106,6 +106,7 @@ import {
   apiRemoteSubagentOwnershipError,
   createApiRemoteAgentResolver,
   hasApiRemoteSubagentOwner,
+  inspectApiRemoteAuthority,
   inspectApiRemoteSession,
 } from '@deepseek-ai/dsh-api-remotes'
 import { canOpenNativePath, openNativePath, openNativeTextFile } from './native-path-opener.ts'
@@ -1213,6 +1214,146 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     agentOptions,
     setup: async ({ meta, events }) =>
       (await composeAgent(resolveSessionPreset({ header: meta, events }))).setup,
+  })
+
+  /** Structural face of this pod's federation client used for routed execution. */
+  interface FederatedSessionChannel {
+    getStatus(): 'connected' | 'connecting' | 'disconnected'
+    sendToSession(
+      sessionId: SessionId,
+      content: ContentBlock[],
+      clientMessageId: string,
+    ): Promise<{ ok: true; messageId: string } | { ok: false; code: string; message: string }>
+    queueUpdateSession(
+      sessionId: SessionId,
+      itemId: string,
+      action: { kind: 'remove' } | { kind: 'steer' } | { kind: 'edit'; content: ContentBlock[] },
+    ): Promise<{ ok: true; accepted: true } | { ok: false; code: string; message: string }>
+    cancelSession(
+      sessionId: SessionId,
+    ): Promise<{ ok: true; accepted: true } | { ok: false; code: string; message: string }>
+    selectModelSession(
+      sessionId: SessionId,
+      selection: { provider: string; model: string; reasoningEffort?: string },
+    ): Promise<
+      | { ok: true; selected: { provider: string; model: string; reasoningEffort?: string } }
+      | { ok: false; code: string; message: string }
+    >
+  }
+
+  /** The pod's federation channel when this composition mounts one. */
+  function federatedChannel(): FederatedSessionChannel | undefined {
+    return ctx.get('federationClient') as FederatedSessionChannel | undefined
+  }
+
+  /**
+   * The connected federation channel for a routed session, or the refusal
+   * explaining why the command cannot ride it. A remote-authority session is
+   * never executed locally, so an absent or disconnected link fails the verb
+   * instead of falling back to a local writer.
+   * @param sessionId - the addressed remote-authority session.
+   * @param authority - the owning node's source id, for the failure text.
+   * @returns the channel, or the RPC error to serve.
+   */
+  function routedChannelOrRefusal(
+    sessionId: SessionId,
+    authority: string,
+  ): { channel: FederatedSessionChannel } | { error: RpcError } {
+    const channel = federatedChannel()
+    if (channel === undefined || channel.getStatus() !== 'connected') {
+      return {
+        error: {
+          code: 'internal',
+          message: `session "${sessionId}" executes on "${authority}" and this host's federation link is offline`,
+          details: {},
+        },
+      }
+    }
+    return { channel }
+  }
+
+  /**
+   * Apply one model selection to a live agent: adapter resolution, image
+   * compatibility with the session's durable content, and the
+   * session-selection seat. Shared verbatim by the Web RPC row and the
+   * federation writer source so a routed switch lands exactly where a local
+   * one does.
+   */
+  async function applyModelSelectionToAgent(
+    agent: Agent,
+    payload: { provider: string; model: string; reasoningEffort?: string },
+  ): Promise<{ selected: ModelSelection } | { errorText: string }> {
+    try {
+      const resolved = await ctx.llm.resolveCallConfig({
+        provider: payload.provider,
+        model: payload.model,
+        ...(payload.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: ReasoningEffortId(payload.reasoningEffort) }),
+      })
+      const pendingImage = [...agent.inbox.nextTurn, ...agent.inbox.nextStep]
+        .some(message => contentHasImage(message.content))
+      if (pendingImage || messagesHaveImage(agent.session.deriveMessages())) {
+        const info = await ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
+        if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+          return {
+            errorText: `Model "${resolved.model}" does not accept image input, but this session already contains images; select an image-capable model.`,
+          }
+        }
+      }
+      const selected: ModelSelection = {
+        provider: resolved.provider,
+        model: resolved.model,
+        ...resolved.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: resolved.reasoningEffort },
+      }
+      selectionFor(agent).current = selected
+      return { selected: { ...selected } }
+    } catch (error: unknown) {
+      return { errorText: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  /**
+   * Structural face this gateway binds into the federation hub when the
+   * composition mounts one: pod-routed sends cold-start through exactly the
+   * composition `agentFor` resumes with, and routed model switches land in
+   * the same seat local switches use.
+   */
+  interface FederationWriterSourceBinding {
+    bindWriterSource(source: {
+      resolveWriter(
+        sessionId: SessionId,
+      ): Promise<{ agent: Agent } | { error: { code: string; message: string } }>
+      applySelection(
+        sessionId: SessionId,
+        selection: { provider: string; model: string; reasoningEffort?: string },
+      ): Promise<
+        | { ok: true; selected: { provider: string; model: string; reasoningEffort?: string } }
+        | { ok: false; message: string }
+      >
+    }): void
+  }
+
+  // Pods compose no hub and skip the binding; the key lookup stays structural
+  // because the binding is optional in both compositions.
+  ctx.inject(['federationHub'], (scope) => {
+    const hub = (scope as { federationHub?: FederationWriterSourceBinding }).federationHub
+    if (hub === undefined) return
+    hub.bindWriterSource({
+      resolveWriter: sessionId => agentFor(sessionId),
+      applySelection: async (sessionId, selection) => {
+        const found = await agentFor(sessionId)
+        if ('error' in found) return { ok: false, message: found.error.message }
+        return serializeImageAdmission(found.agent, async () => {
+          const applied = await applyModelSelectionToAgent(found.agent, selection)
+          return 'selected' in applied
+            ? { ok: true as const, selected: { ...applied.selected } }
+            : { ok: false as const, message: applied.errorText }
+        })
+      },
+    })
   })
 
   /** Send one transient frame to every connected mux consumer. */
@@ -2335,13 +2476,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         // no local store knows) serve the advisory directory DETACHED: the
         // mounted ModelSelect seat calls this on every view open, and resuming
         // an Agent there would attach a writer to a session the pod does not
-        // own, freezing the pod's view at attach time. A live Agent (a
-        // deliberate takeover through prompt or selectModel) keeps serving
-        // through the agent.
+        // own, freezing the pod's view at attach time. A genuinely live Agent
+        // — this host owns the session — keeps serving through the agent.
         const live = ctx.agents.get(sessionId)
         const persistence = ctx.get('sessionPersistence')
         if (live === undefined && persistence !== undefined) {
           const localMeta = (await persistence.list()).find(candidate => candidate.id === sessionId)
+          // An unstamped local row means a local source answers the read and
+          // the ordinary resume path is correct for it.
           if (localMeta === undefined || localMeta.remoteAuthority !== undefined) {
             try {
               const inspected = await inspectServable(sessionId)
@@ -2375,57 +2517,72 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async selectModel(request) {
         const { sessionId, provider, model, reasoningEffort } = request.payload
-        const found = await agentFor(sessionId)
-        if ('error' in found) return err(request, found.error)
-        return serializeImageAdmission(found.agent, async () => {
-          try {
-            const resolved = await ctx.llm.resolveCallConfig({
-              provider,
-              model,
-              ...reasoningEffort === undefined
-                ? {}
-                : { reasoningEffort: ReasoningEffortId(reasoningEffort) },
-            })
-            const pendingImage = [...found.agent.inbox.nextTurn, ...found.agent.inbox.nextStep]
-              .some(message => contentHasImage(message.content))
-            if (pendingImage || messagesHaveImage(found.agent.session.deriveMessages())) {
-              const info = await ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
-              if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
-                return err(request, {
-                  code: 'model-unavailable',
-                  message: `Model "${resolved.model}" does not accept image input, but this session already contains images; select an image-capable model.`,
-                  details: { provider, model },
-                })
-              }
-            }
-            const selected: ModelSelection = {
-              provider: resolved.provider,
-              model: resolved.model,
-              ...resolved.reasoningEffort === undefined
-                ? {}
-                : { reasoningEffort: resolved.reasoningEffort },
-            }
-            selectionFor(found.agent).current = selected
-            try {
-              await defaults.saveDefaultModelSelection?.(selected)
-            } catch (error: unknown) {
-              ctx.logger.warn(
-                `api-proxy: the model switch applies to this session but was not saved as the default: ${String(error)}`,
-              )
-            }
-            return ok(request, { selected: { ...selected } })
-          } catch (error: unknown) {
+        // Routed execution: the switch applies on the owning node's writer,
+        // through the same selection seat a local switch uses.
+        const authority = await inspectApiRemoteAuthority(ctx, sessionId)
+        if (authority !== undefined) {
+          const routed = routedChannelOrRefusal(sessionId, authority)
+          if ('error' in routed) return err(request, routed.error)
+          const result = await routed.channel.selectModelSession(sessionId, {
+            provider,
+            model,
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          })
+          if (!result.ok) {
             return err(request, {
               code: 'model-unavailable',
-              message: error instanceof Error ? error.message : String(error),
+              message: result.message,
               details: { provider, model },
             })
           }
+          const selectedWire: ModelSelection = {
+            provider: result.selected.provider,
+            model: result.selected.model,
+          }
+          if (result.selected.reasoningEffort !== undefined) {
+            selectedWire.reasoningEffort = ReasoningEffortId(result.selected.reasoningEffort)
+          }
+          return ok(request, { selected: selectedWire })
+        }
+        const found = await agentFor(sessionId)
+        if ('error' in found) return err(request, found.error)
+        return serializeImageAdmission(found.agent, async () => {
+          const applied = await applyModelSelectionToAgent(found.agent, {
+            provider,
+            model,
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          })
+          if ('errorText' in applied) {
+            return err(request, {
+              code: 'model-unavailable',
+              message: applied.errorText,
+              details: { provider, model },
+            })
+          }
+          try {
+            await defaults.saveDefaultModelSelection?.(applied.selected)
+          } catch (error: unknown) {
+            ctx.logger.warn(
+              `api-proxy: the model switch applies to this session but was not saved as the default: ${String(error)}`,
+            )
+          }
+          return ok(request, { selected: { ...applied.selected } })
         })
       },
 
       async rename(request) {
         const { sessionId, title } = request.payload
+        // Routed sessions keep their title on the owning node; the pod UI
+        // hides the affordance, and the verb refuses rather than resuming a
+        // writer to answer it.
+        const routedAuthority = await inspectApiRemoteAuthority(ctx, sessionId)
+        if (routedAuthority !== undefined) {
+          return err(request, {
+            code: 'internal',
+            message: `renaming is unavailable for session "${sessionId}": it executes on "${routedAuthority}"`,
+            details: {},
+          })
+        }
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         const titles = ctx.get('sessionTitle')
@@ -2564,6 +2721,38 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             details: { value: clientTimeZone },
           })
         }
+        // Routed execution: a remote-authority session never gains a local
+        // writer. Its prompt rides the federation channel to the owning node;
+        // an offline link fails loudly instead of falling back.
+        const authority = await inspectApiRemoteAuthority(ctx, sessionId)
+        if (authority !== undefined) {
+          if (mode === 'steer') {
+            return err(request, {
+              code: 'agent-busy',
+              message: 'remote sessions accept appended messages only; steering a running remote turn is not supported',
+              details: { reason: 'REMOTE_STEER_UNSUPPORTED' },
+            })
+          }
+          if (content.some(part => part.type === 'image')) {
+            return err(request, {
+              code: 'attachment-error',
+              message: 'attachments resolve on this host only; remove images from prompts to sessions that execute elsewhere.',
+              details: { reason: 'REMOTE_PROMPT_TEXT_ONLY' },
+            })
+          }
+          const routed = routedChannelOrRefusal(sessionId, authority)
+          if ('error' in routed) return err(request, routed.error)
+          const durable = await durablePromptContent(ctx, content)
+          const result = await routed.channel.sendToSession(sessionId, durable, String(request.rpcId))
+          if (!result.ok) {
+            return err(request, {
+              code: 'internal',
+              message: `the owning node refused the message: ${result.message}`,
+              details: {},
+            })
+          }
+          return ok(request, { accepted: true as const })
+        }
         const resolved = await turnAgentFor<{ accepted: true }>(request, sessionId)
         if ('refused' in resolved) return resolved.refused
         const agent = resolved.agent
@@ -2659,25 +2848,41 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         }
       },
 
-      updateQueue(request) {
+      async updateQueue(request) {
         const { sessionId, itemId, action } = request.payload
         if (action.kind === 'edit' && action.content.some(block => block.type !== 'text')) {
-          return Promise.resolve(err(request, {
+          return err(request, {
             code: 'attachment-error',
             message: 'queue edits accept text content only',
             details: { reason: 'QUEUE_EDIT_NON_TEXT' },
-          }))
+          })
+        }
+        // Routed execution mirrors prompt: the mutation applies on the owning
+        // node's writer, never through a local one.
+        const authority = await inspectApiRemoteAuthority(ctx, sessionId)
+        if (authority !== undefined) {
+          const routed = routedChannelOrRefusal(sessionId, authority)
+          if ('error' in routed) return err(request, routed.error)
+          const result = await routed.channel.queueUpdateSession(sessionId, itemId, action)
+          if (!result.ok) {
+            return err(request, {
+              code: 'internal',
+              message: `the owning node refused the queue update: ${result.message}`,
+              details: {},
+            })
+          }
+          return ok(request, { accepted: true as const })
         }
         const agent = ctx.agents.get(sessionId)
         if (agent !== undefined && hasSubagentOwner(agent.session, agent)) {
-          return Promise.resolve(err(request, subagentOwnershipError(sessionId)))
+          return err(request, subagentOwnershipError(sessionId))
         }
         if (agent === undefined) {
-          return Promise.resolve(err(request, {
+          return err(request, {
             code: 'queue-item-not-found',
             message: 'queued item is no longer pending',
             details: { itemId },
-          }))
+          })
         }
         const target = agent.inbox.nextTurn.some(message => message.id === itemId)
           ? 'next-turn'
@@ -2687,18 +2892,18 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           : (target === 'next-turn' ? agent.inbox.nextTurn : agent.inbox.nextStep)
             .find(candidate => candidate.id === itemId)
         if (target === undefined || message === undefined) {
-          return Promise.resolve(err(request, {
+          return err(request, {
             code: 'queue-item-not-found',
             message: 'queued item is no longer pending',
             details: { itemId },
-          }))
+          })
         }
         if (action.kind === 'steer' && (target !== 'next-turn' || agent.status !== 'running')) {
-          return Promise.resolve(err(request, {
+          return err(request, {
             code: 'steer-unavailable',
             message: 'current turn no longer accepts steering',
             details: { itemId },
-          }))
+          })
         }
         if (action.kind === 'edit') {
           agent.inbox.replace(itemId, freezeMessage({ ...message, content: action.content }))
@@ -2706,24 +2911,39 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           agent.inbox.remove(itemId)
           if (action.kind === 'steer') agent.steer(message)
         }
-        return Promise.resolve(ok(request, { accepted: true as const }))
+        return ok(request, { accepted: true as const })
       },
 
-      cancel(request) {
+      async cancel(request) {
         const { sessionId } = request.payload
+        // Routed execution: the cancellation rides to the owning node's writer.
+        const authority = await inspectApiRemoteAuthority(ctx, sessionId)
+        if (authority !== undefined) {
+          const routed = routedChannelOrRefusal(sessionId, authority)
+          if ('error' in routed) return err(request, routed.error)
+          const result = await routed.channel.cancelSession(sessionId)
+          if (!result.ok) {
+            return err(request, {
+              code: 'internal',
+              message: `the owning node refused the cancellation: ${result.message}`,
+              details: {},
+            })
+          }
+          return ok(request, { accepted: true as const })
+        }
         const agent = ctx.agents.get(sessionId)
         if (agent === undefined) {
-          return Promise.resolve(err(request, {
+          return err(request, {
             code: 'session-not-found',
             message: `session "${sessionId}" not found (not attached)`,
             details: { sessionId },
-          }))
+          })
         }
         if (hasSubagentOwner(agent.session, agent)) {
-          return Promise.resolve(err(request, subagentOwnershipError(sessionId)))
+          return err(request, subagentOwnershipError(sessionId))
         }
         agent.cancel({ kind: 'user' }, { keepInbox: true })
-        return Promise.resolve(ok(request, { accepted: true as const }))
+        return ok(request, { accepted: true as const })
       },
     },
 

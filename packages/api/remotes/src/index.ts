@@ -17,9 +17,11 @@ import type {} from '@deepseek-ai/dsh-settings/types'
 export {
   ApiRemoteSessionNotFound,
   ApiRemoteSubagentSessionOwnership,
+  ApiRemoteRoutedSession,
   apiRemoteSubagentOwnershipError,
   createApiRemoteAgentResolver,
   hasApiRemoteSubagentOwner,
+  inspectApiRemoteAuthority,
   inspectApiRemoteSession,
 } from './agent-lookup.ts'
 export type {
