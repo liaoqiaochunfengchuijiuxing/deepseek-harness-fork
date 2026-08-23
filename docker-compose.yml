@@ -20,6 +20,9 @@ services:
       - DSH_STORAGE_DIR=/data/hub
     volumes:
       - hub_data:/data/hub
+      # Cloud workspace space: hub sessions' working directory persists here
+      # across image rebuilds (register it via workspace.create /data/workspace).
+      - hub_workspace:/data/workspace
     command: ["node", "apps/cli/lib/bin.js", "--profile", "web", "--patch", "packages/federation/federation-hub/cordis.patch.yml", "--no-open"]
     networks:
       - dsh-net
@@ -92,6 +95,7 @@ networks:
 
 volumes:
   hub_data:
+  hub_workspace:
   pod1_data:
   pod2_data:
   pod1_workspace:

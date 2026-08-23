@@ -300,6 +300,40 @@ describe('LocalSessionSource live session store', () => {
     stopSkip()
   })
 
+  it('holds a cold-session subscription open and activates on publication, replaying from fromSeq', async () => {
+    // Directly on the source: the aggregate's scan probes ownership through
+    // getSession, which needs persistence to resolve a cold session — the
+    // activation contract under test is the source's own.
+    const localSource = ctx.sessionSources.getSource('local') as LocalSessionSource
+    const received: string[] = []
+    const unsubscribe = await localSource.subscribeEvents(SessionId('cold-activate'), (event) => {
+      received.push(event.type)
+    }, 0)
+
+    // Nothing arrives while the session stays cold.
+    await Promise.resolve()
+    expect(received).toEqual([])
+
+    // Publication (a resume republishes the session) activates the held
+    // subscription: the fromSeq replay plus every later append flows.
+    const session = ctx.sessions.create(SessionId('cold-activate'), { meta: { cwd: process.cwd() } })
+    session.append('turn/start', { turn: 1 })
+    expect(received).toContain('turn/start')
+
+    unsubscribe()
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    expect(received).not.toContain('turn/end')
+
+    // A subscription disposed while still cold never activates later.
+    const dropped: string[] = []
+    const unsubscribeCold = await localSource.subscribeEvents(SessionId('never-activates'), (event) => {
+      dropped.push(event.type)
+    }, 0)
+    unsubscribeCold()
+    ctx.sessions.create(SessionId('never-activates'), { meta: { cwd: process.cwd() } })
+    expect(dropped).toEqual([])
+  })
+
   it('returns empty results when no session store is mounted', async () => {
     const empty = new Context()
     await empty.plugin(InvariantsService)

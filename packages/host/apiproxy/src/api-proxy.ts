@@ -16,7 +16,7 @@ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { contentHasImage, createUserMessage, freezeMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import { isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
+import { foldRequestHeader, isAppendSurfaceEvent, isJsonValue } from '@deepseek-ai/dsh-session'
 import type { JsonValue, Session, SessionEvent, SessionEventMap, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
@@ -1221,6 +1221,72 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     for (const queue of muxQueues) queue.push(envelope)
   }
 
+  /**
+   * One bridged live stream for a remote-authority session: the hub-side
+   * event flow, re-emitted as local `session/event` mux frames so every
+   * connected Web client sees the remote session grow in real time, with
+   * local-frame parity (tool views included).
+   */
+  interface RemoteStream {
+    dispose: () => void
+    /** Presenter scope of the session's recorded composition; refreshed on every read. */
+    scope: ScopeKey | undefined
+    /** tool/call arguments for result-view pairing, cleared on turn/end (mux parity). */
+    openCalls: Map<string, { name: string; args: unknown }>
+  }
+
+  /** Live bridges keyed by session; the promise dedupes concurrent first reads. */
+  const remoteStreams = new Map<SessionId, Promise<RemoteStream>>()
+
+  /**
+   * Establish (or refresh the scope of) the live bridge for one
+   * remote-authority session. Subscriptions live for the process lifetime:
+   * the federation source re-subscribes from `lastSeq + 1` across its own
+   * reconnects, and the bridged set is bounded by the sessions users open.
+   */
+  function ensureRemoteStream(
+    sessionId: SessionId,
+    fromSeq: number,
+    scope: ScopeKey | undefined,
+    sourceId: string,
+  ): void {
+    const pending = remoteStreams.get(sessionId)
+    if (pending !== undefined) {
+      void pending.then((stream) => { stream.scope = scope })
+      return
+    }
+    const sources = ctx.get('sessionSources') as {
+      subscribeEvents?: (
+        id: SessionId,
+        onEvent: (event: SessionEvent) => void,
+        fromSeq?: number,
+        sourceId?: string,
+      ) => Promise<() => void>
+    } | undefined
+    if (sources?.subscribeEvents === undefined) return
+    const openCalls = new Map<string, { name: string; args: unknown }>()
+    const stream: RemoteStream = { dispose: () => {}, scope, openCalls }
+    const promise = sources.subscribeEvents(sessionId, (event) => {
+      if (event.type === 'tool/call') {
+        try {
+          const data = event.data as ToolCallData
+          openCalls.set(data.callId, { name: data.name, args: JSON.parse(data.arguments) })
+        } catch {
+          // Unparseable model arguments: leave the table unset; the result view soft-falls.
+        }
+      } else if (event.type === 'turn/end') {
+        openCalls.clear()
+      }
+      const view = viewFor(ctx, event, callId => openCalls.get(callId), stream.scope)
+      broadcast({ type: 'session/event', sessionId, event, ...view === undefined ? {} : { view } })
+    }, fromSeq, sourceId).then((dispose) => {
+      stream.dispose = dispose
+      return stream
+    })
+    remoteStreams.set(sessionId, promise)
+    promise.catch(() => remoteStreams.delete(sessionId))
+  }
+
   // Projection change feed → session/projection push frames. The carrier
   // mints the wire frame (the Service Definition package holds no wire vocabulary); the
   // child activates only when a projection registry is composed, and the
@@ -2237,6 +2303,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           // at N with a baseline folded to N+1.
           const scope = await presenterScopeFor(sessionId, sourceSession(source))
           const cut = historyCutOf(source, beforeSeq === undefined)
+          // A remote-authority session's history read also establishes its
+          // live bridge: the hub replays from `fromSeq` on subscribe, so
+          // starting one past the cut's tail cannot drop events that land
+          // between the read and the subscription.
+          if (source.kind === 'detached' && source.header.remoteAuthority !== undefined) {
+            const tail = cut.events.at(-1)
+            ensureRemoteStream(sessionId, tail === undefined ? 0 : tail.seq + 1, scope, source.header.remoteAuthority)
+          }
           const page = historyPage(ctx, cut.events, beforeSeq, maxMessages, scope)
           return ok(request, {
             events: page.events,
@@ -2257,6 +2331,40 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
 
       async models(request) {
         const { sessionId } = request.payload
+        // Remote-authority sessions (a materialized hub copy, or a hub session
+        // no local store knows) serve the advisory directory DETACHED: the
+        // mounted ModelSelect seat calls this on every view open, and resuming
+        // an Agent there would attach a writer to a session the pod does not
+        // own, freezing the pod's view at attach time. A live Agent (a
+        // deliberate takeover through prompt or selectModel) keeps serving
+        // through the agent.
+        const live = ctx.agents.get(sessionId)
+        const persistence = ctx.get('sessionPersistence')
+        if (live === undefined && persistence !== undefined) {
+          const localMeta = (await persistence.list()).find(candidate => candidate.id === sessionId)
+          if (localMeta === undefined || localMeta.remoteAuthority !== undefined) {
+            try {
+              const inspected = await inspectServable(sessionId)
+              if (hasSubagentOwner({ header: inspected.meta }, undefined)) {
+                return err(request, subagentOwnershipError(sessionId))
+              }
+              const logged = foldRequestHeader(inspected.events)?.config
+              const current = logged === undefined
+                ? defaults.defaultModelSelection()
+                : {
+                  provider: logged.provider,
+                  model: logged.model,
+                  ...logged.reasoningEffort === undefined ? {} : { reasoningEffort: logged.reasoningEffort },
+                }
+              const { groups, failures } = await buildModelCatalog(ctx)
+              return ok(request, { current: { ...current }, routable: routeServed(current.provider), groups, failures })
+            } catch (error) {
+              // An unknown identity falls through to agentFor, which maps the
+              // same lookup failure onto the canonical session-not-found error.
+              if (!(error instanceof SessionNotFound)) throw error
+            }
+          }
+        }
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
         const current = selectionFor(found.agent).current

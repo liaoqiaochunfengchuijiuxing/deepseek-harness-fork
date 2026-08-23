@@ -96,6 +96,14 @@ export interface SessionHeader {
    * would replay history the model can no longer act on.
    */
   readonly agentPreset?: string
+  /**
+   * Id of the session source this local log was materialized from (a remote
+   * read-through copy, not a pod-authored session). While the copy stays a
+   * strict prefix of that source's log, reads catch up the remote suffix
+   * through THIS source instead of the registry scan, which a registered local
+   * source would otherwise answer with the stale copy.
+   */
+  readonly remoteAuthority?: string
 }
 
 /**

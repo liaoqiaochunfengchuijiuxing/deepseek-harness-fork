@@ -1,6 +1,8 @@
 FROM node:22-bookworm-slim AS base
 
-# Install system dependencies needed for agent execution
+# Install system dependencies needed for agent execution. musl-tools builds the
+# Landlock launcher (the only usable Linux sandbox backend inside Docker:
+# bubblewrap needs CLONE_NEWUSER, which Docker's default seccomp profile denies).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     python3 \
@@ -8,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     bash \
     procps \
+    musl-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Setup pnpm
@@ -41,6 +44,9 @@ COPY website ./website
 # Install workspace dependencies and compile libraries and frontend
 RUN pnpm install --frozen-lockfile
 RUN pnpm run build
+# Compile the landlock-run launcher for this build architecture so confined
+# shell execution has an enforcing backend inside the container.
+RUN cd native/landlock-run && pnpm build:native
 
 # Default environment configuration
 ENV NODE_ENV=production

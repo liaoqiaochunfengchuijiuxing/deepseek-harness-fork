@@ -4,7 +4,7 @@ import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SessionStore from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
-import { createApiRemoteAgentResolver } from '@deepseek-ai/dsh-api-remotes'
+import { createApiRemoteAgentResolver, inspectApiRemoteSession } from '@deepseek-ai/dsh-api-remotes'
 import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 
@@ -112,9 +112,14 @@ describe('API Remote Agent resolver races', () => {
   })
 
   it('materializes a session-source session before cold resume for both remote shapes', async () => {
-    for (const wrapped of [true, false]) {
+    const shapes = [
+      { name: 'wrapped-with-id', wrap: true, sourceId: 'federation-hub' },
+      { name: 'wrapped', wrap: true, sourceId: undefined },
+      { name: 'bare', wrap: false, sourceId: undefined },
+    ] as const
+    for (const shape of shapes) {
       const ctx = await createContext()
-      const sessionId = sid(`remote-source-${wrapped ? 'wrapped' : 'bare'}`)
+      const sessionId = sid(`remote-source-${shape.name}`)
       const meta = header(sessionId)
       const events = [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } }] as SessionEvent[]
       const created: SessionHeader[] = []
@@ -128,8 +133,8 @@ describe('API Remote Agent resolver races', () => {
         },
       } as never)
       ctx.provide('sessionSources', {
-        getSession: () => Promise.resolve(wrapped
-          ? { source: {}, session: { header: meta, events } }
+        getSession: () => Promise.resolve(shape.wrap
+          ? { source: { id: shape.sourceId }, session: { header: meta, events } }
           : { header: meta, events }),
       } as never)
       let published: Session | undefined
@@ -141,7 +146,9 @@ describe('API Remote Agent resolver races', () => {
       const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
 
       expect(result).toMatchObject({ agent: { id: sessionId } })
-      expect(created).toEqual([meta])
+      // A source that identifies itself stamps the materialized copy with its
+      // id so later catch-ups read through it instead of the registry scan.
+      expect(created).toEqual([shape.sourceId === undefined ? meta : { ...meta, remoteAuthority: shape.sourceId }])
       expect(appended).toEqual([events])
       await ctx.fiber.dispose()
     }
@@ -180,6 +187,101 @@ describe('API Remote Agent resolver races', () => {
     expect(result).toMatchObject({ agent: { id: sessionId } })
     expect(appended).toEqual([growth])
     await ctx.fiber.dispose()
+  })
+
+  it('targets the stamped authority when resuming a stale materialized copy', async () => {
+    const ctx = await createContext()
+    const sessionId = sid('authority-resume')
+    const meta = { ...header(sessionId), remoteAuthority: 'federation-hub' }
+    const base = [
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+      { type: 'turn/end', seq: 1, time: 2, data: { turn: 0, reason: 'success' } },
+    ] as SessionEvent[]
+    const growth = [{ type: 'turn/start', seq: 2, time: 3, data: { turn: 1 } }] as SessionEvent[]
+    const appended: SessionEvent[][] = []
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      inspect: () => Promise.resolve({ meta, events: base }),
+      create: () => Promise.resolve(),
+      append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+        appended.push([...batch])
+        return Promise.resolve()
+      },
+    } as never)
+    const getSession = vi.fn().mockResolvedValue({ source: { id: 'federation-hub' }, session: { header: meta, events: [...base, ...growth] } })
+    ctx.provide('sessionSources', { getSession } as never)
+    vi.spyOn(ctx.agents, 'resume').mockImplementation(async () => {
+      const session = ctx.sessions.create(sessionId, { meta: { cwd: '/proj' } })
+      return { agent: stubAgent(ctx, session), dispose: () => Promise.resolve() }
+    })
+
+    const result = await createApiRemoteAgentResolver(ctx, {})(sessionId)
+
+    expect(result).toMatchObject({ agent: { id: sessionId } })
+    // The catch-up asks the stamped source directly: the registry scan would
+    // answer with the stale local copy through a registered local source.
+    expect(getSession).toHaveBeenCalledWith(sessionId, 'federation-hub')
+    expect(appended).toEqual([growth])
+    await ctx.fiber.dispose()
+  })
+
+  it('catches a stamped copy up to its authority on a plain inspection read', async () => {
+    const ctx = await createContext()
+    const sessionId = sid('authority-inspect')
+    const meta = { ...header(sessionId), remoteAuthority: 'federation-hub' }
+    const base = [
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+    ] as SessionEvent[]
+    const growth = [{ type: 'turn/end', seq: 1, time: 2, data: { turn: 0, reason: 'success' } }] as SessionEvent[]
+    let store = [...base]
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      inspect: () => Promise.resolve({ meta, events: store }),
+      create: () => Promise.resolve(),
+      append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+        store = [...store, ...batch]
+        return Promise.resolve()
+      },
+    } as never)
+    ctx.provide('sessionSources', {
+      getSession: (id: SessionId, hint?: string) => Promise.resolve(hint === 'federation-hub' && id === sessionId
+        ? { source: { id: 'federation-hub' }, session: { header: meta, events: [...base, ...growth] } }
+        : undefined),
+    } as never)
+
+    const inspected = await inspectApiRemoteSession(ctx, sessionId)
+
+    expect(inspected.events).toEqual([...base, ...growth])
+    expect(store).toEqual([...base, ...growth])
+    await ctx.fiber.dispose()
+  })
+
+  it('serves the stale stamped copy when the authority is unavailable', async () => {
+    for (const mode of ['absent', 'throws'] as const) {
+      const ctx = await createContext()
+      const sessionId = sid(`authority-${mode}`)
+      const meta = { ...header(sessionId), remoteAuthority: 'federation-hub' }
+      const base = [{ type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } }] as SessionEvent[]
+      const appended: SessionEvent[][] = []
+      ctx.provide('sessionPersistence', {
+        list: () => Promise.resolve([meta]),
+        inspect: () => Promise.resolve({ meta, events: base }),
+        create: () => Promise.resolve(),
+        append: (_id: SessionId, batch: readonly SessionEvent[]) => {
+          appended.push([...batch])
+          return Promise.resolve()
+        },
+      } as never)
+      ctx.provide('sessionSources', {
+        getSession: () => mode === 'absent' ? Promise.resolve(undefined) : Promise.reject(new Error('hub unreachable')),
+      } as never)
+
+      const inspected = await inspectApiRemoteSession(ctx, sessionId)
+
+      expect(inspected.events).toEqual(base)
+      expect(appended).toEqual([])
+      await ctx.fiber.dispose()
+    }
   })
 
   it('leaves a diverged or current local copy untouched', async () => {

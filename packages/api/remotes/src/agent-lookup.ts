@@ -92,32 +92,40 @@ export function apiRemoteSubagentOwnershipError(sessionId: SessionId): ApiRemote
  * shape as well.
  * @param ctx - Host Context carrying the optional session-sources service.
  * @param sessionId - identity to read from any remote source.
- * @returns the remote header and event log, or undefined when no source knows the identity.
+ * @param sourceId - restrict the read to the source with this id (a
+ *   {@link SessionHeader.remoteAuthority} hint that bypasses the registry
+ *   scan, which a registered local source would otherwise answer with a
+ *   materialized copy's stale log).
+ * @returns the answering source's id (absent for the bare shape), the remote
+ * header, and event log, or undefined when no source knows the identity.
  */
 async function readRemoteSession(
   ctx: Context,
   sessionId: SessionId,
-): Promise<{ header: SessionHeader; events: SessionEvent[] } | undefined> {
+  sourceId?: string,
+): Promise<{ sourceId: string | undefined; header: SessionHeader; events: SessionEvent[] } | undefined> {
   const sources = ctx.get('sessionSources') as {
-    getSession?: (id: SessionId) => Promise<
-      | { source?: unknown; session?: { header: SessionHeader; events: SessionEvent[] } }
+    getSession?: (id: SessionId, hint?: string) => Promise<
+      | { source?: { id?: unknown }; session?: { header: SessionHeader; events: SessionEvent[] } }
       | { header: SessionHeader; events: SessionEvent[] }
       | undefined
     >
   } | undefined
   if (sources?.getSession === undefined) return undefined
-  const remote = await sources.getSession(sessionId)
+  const remote = await sources.getSession(sessionId, sourceId)
   if (remote === undefined) return undefined
   const inspection = 'session' in remote && remote.session !== undefined
     ? remote.session
     : (remote as { header: SessionHeader; events: SessionEvent[] })
   if (inspection.header === undefined || !Array.isArray(inspection.events)) return undefined
-  return { header: inspection.header, events: inspection.events }
+  const answeringSourceId = sourceId
+    ?? ('source' in remote && typeof remote.source?.id === 'string' ? remote.source.id : undefined)
+  return { sourceId: answeringSourceId, header: inspection.header, events: inspection.events }
 }
 
 /** Structural read/append face this module needs from the durable store. */
 interface SessionPersistenceLike {
-  list(): Promise<{ id: SessionId }[]>
+  list(): Promise<SessionHeader[]>
   inspect(id: SessionId): Promise<{ meta: SessionHeader; events: readonly SessionEvent[] }>
   create(meta: SessionHeader): Promise<void>
   append(id: SessionId, events: readonly SessionEvent[]): Promise<void>
@@ -150,7 +158,31 @@ async function appendRemoteSuffix(
 }
 
 /**
+ * Catch a materialized copy up to its recorded authority's log. Fail-soft: an
+ * unreachable or failing authority serves the stale copy rather than failing
+ * the read — the copy stays a valid strict-prefix snapshot.
+ * @param ctx - Host Context carrying the optional session-sources service.
+ * @param persistence - local durable store holding the materialized copy.
+ * @param sessionId - identity with a stamped {@link SessionHeader.remoteAuthority}.
+ * @param authority - the recorded authority source id.
+ */
+async function catchUpMaterializedCopy(
+  ctx: Context,
+  persistence: SessionPersistenceLike,
+  sessionId: SessionId,
+  authority: string,
+): Promise<void> {
+  const remote = await readRemoteSession(ctx, sessionId, authority)
+  if (remote !== undefined) {
+    await appendRemoteSuffix(persistence, sessionId, remote.events)
+  }
+}
+
+/**
  * Inspect one cold served session without repairing, resuming, or publishing it.
+ * A materialized copy (stamped {@link SessionHeader.remoteAuthority}) catches
+ * up to its authority's log first, so reads never serve a prefix the authority
+ * has already grown past.
  * @param ctx - Host Context carrying the optional persistence provider.
  * @param sessionId - durable identity to inspect.
  * @returns detached metadata and events for a servable session.
@@ -160,10 +192,18 @@ export async function inspectApiRemoteSession(
   ctx: Context,
   sessionId: SessionId,
 ): Promise<{ meta: SessionHeader; events: SessionEvent[] }> {
-  const persistence = ctx.get('sessionPersistence')
+  const persistence = ctx.get('sessionPersistence') as SessionPersistenceLike | undefined
   if (persistence !== undefined) {
     const meta = (await persistence.list()).find(candidate => candidate.id === sessionId)
     if (meta !== undefined && meta.cwd !== undefined) {
+      if (meta.remoteAuthority !== undefined) {
+        try {
+          await catchUpMaterializedCopy(ctx, persistence, sessionId, meta.remoteAuthority)
+        } catch {
+          // The authority fetch or suffix append failed; the stale local copy
+          // below is still a servable strict-prefix snapshot.
+        }
+      }
       const inspected = await persistence.inspect(sessionId)
       if (inspected.meta.cwd !== undefined) {
         return { meta: inspected.meta, events: [...inspected.events] }
@@ -173,7 +213,10 @@ export async function inspectApiRemoteSession(
 
   const remote = await readRemoteSession(ctx, sessionId)
   if (remote !== undefined) {
-    return { meta: remote.header, events: [...remote.events] }
+    return {
+      meta: remote.sourceId === undefined ? remote.header : { ...remote.header, remoteAuthority: remote.sourceId },
+      events: [...remote.events],
+    }
   }
 
   if (persistence === undefined) {
@@ -233,18 +276,23 @@ export function createApiRemoteAgentResolver(
           }
           // `agents.resume` prepares from the local durable store only, so a
           // session whose events live in a remote source must be materialized
-          // locally before resume; an already-materialized copy catches up to
-          // the remote suffix before the same resume.
+          // locally before resume. A stamped copy (`remoteAuthority`, set on
+          // materialization when the answering source identifies itself) was
+          // already caught up by the `inspectApiRemoteSession` call above,
+          // which reads through the stamp instead of the registry scan (a
+          // registered local source would answer the scan with the stale copy
+          // itself); an unstamped local copy keeps the registry-scan catch-up
+          // for compositions without a shadowing local source.
           const persistence = ctx.get('sessionPersistence') as SessionPersistenceLike | undefined
           if (persistence !== undefined) {
             const list = await persistence.list()
-            const existsLocally = list.some(candidate => candidate.id === sessionId)
-            if (!existsLocally) {
+            const localMeta = list.find(candidate => candidate.id === sessionId)
+            if (localMeta === undefined) {
               await persistence.create(inspected.meta)
               if (inspected.events.length > 0) {
                 await persistence.append(sessionId, inspected.events)
               }
-            } else {
+            } else if (localMeta.remoteAuthority === undefined) {
               const remote = await readRemoteSession(ctx, sessionId)
               if (remote !== undefined) {
                 await appendRemoteSuffix(persistence, sessionId, remote.events)

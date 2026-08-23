@@ -948,6 +948,27 @@ describe('JsonlSessionPersistence: scanLog unit', () => {
     expect(() => scanLog(Buffer.from(log))).toThrow(/session header/)
   })
 
+  it('round-trips the remote authority a copy was materialized from', () => {
+    const line = toHeaderLine({
+      version: 0,
+      id: SessionId('materialized'),
+      createdAt: 1,
+      delegationDepth: 0,
+      remoteAuthority: 'federation-hub',
+    })
+    const log = `${JSON.stringify(line)}\n`
+
+    // The authority routes later catch-up reads past the registry scan;
+    // dropping it on disk would freeze the copy at materialization time.
+    expect(scanLog(Buffer.from(log)).meta.remoteAuthority).toBe('federation-hub')
+  })
+
+  it('rejects a session header whose remoteAuthority is not a string', () => {
+    const log = '{"type":"session","version":0,"id":"bad-authority","createdAt":1,"delegationDepth":0,"remoteAuthority":7}\n'
+
+    expect(() => scanLog(Buffer.from(log))).toThrow(/session header/)
+  })
+
   it('a seq gap after the last turn/end bounds the preserved tail (torn fragment tolerated)', () => {
     const log = [
       JSON.stringify({ type: 'session', version: 0, id: 'g', createdAt: 1, delegationDepth: 0 }),

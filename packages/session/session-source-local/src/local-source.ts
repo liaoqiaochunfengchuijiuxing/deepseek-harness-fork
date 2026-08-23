@@ -127,25 +127,47 @@ export class LocalSessionSource implements SessionSource {
   ): Promise<() => void> {
     const sessions = this.ctx.get('sessions')
     const live = sessions?.get(sessionId)
-    if (!live) {
-      return Promise.resolve(() => {})
+    if (live) {
+      this.replayFrom(live, onEvent, fromSeq)
+      return Promise.resolve(this.attachEventForwarding(sessionId, onEvent))
     }
 
-    if (fromSeq !== undefined) {
-      for (const ev of live.events) {
-        if (ev.seq >= fromSeq) {
-          onEvent(ev)
-        }
+    // A cold session owns no live event flow yet, but a subscriber must still
+    // see the session the moment it activates (a resume republishes it): hold
+    // the subscription open against that activation instead of ending it.
+    let forwarding: (() => void) | undefined
+    const stopWaiting = this.ctx.on('session/created', (session) => {
+      if (session.id !== sessionId || forwarding !== undefined) return
+      this.replayFrom(session, onEvent, fromSeq)
+      forwarding = this.attachEventForwarding(sessionId, onEvent)
+    })
+    return Promise.resolve(() => {
+      stopWaiting()
+      forwarding?.()
+    })
+  }
+
+  /** Replay a live session's already-appended events at or after `fromSeq`. */
+  private replayFrom(
+    live: { events: readonly SessionEvent[] },
+    onEvent: (event: SessionEvent) => void,
+    fromSeq?: number,
+  ): void {
+    if (fromSeq === undefined) return
+    for (const ev of live.events) {
+      if (ev.seq >= fromSeq) {
+        onEvent(ev)
       }
     }
+  }
 
-    const unsubscribe = this.ctx.on('session/event', (session, event) => {
+  /** Forward this process's appended events for one session to a subscriber. */
+  private attachEventForwarding(sessionId: SessionId, onEvent: (event: SessionEvent) => void): () => void {
+    return this.ctx.on('session/event', (session, event) => {
       if (session.id === sessionId) {
         onEvent(event)
       }
     })
-
-    return Promise.resolve(unsubscribe)
   }
 
   async renameSession(id: SessionId, title: string): Promise<void> {

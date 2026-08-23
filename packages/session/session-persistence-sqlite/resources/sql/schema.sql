@@ -13,6 +13,7 @@ CREATE TABLE sessions (
   origin           TEXT,
   delegation_depth INTEGER,
   agent_preset     TEXT,
+  remote_authority TEXT,
   incarnation      TEXT NOT NULL,
   revision         INTEGER NOT NULL
 ) STRICT;

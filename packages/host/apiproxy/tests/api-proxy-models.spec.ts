@@ -17,7 +17,7 @@ import type {
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
@@ -276,6 +276,58 @@ describe('Web session model selection', () => {
     expect(readImage).toHaveBeenCalledOnce()
     await ctx.fiber.dispose()
   })
+  it('serves a remote-authority session detached without resuming an agent', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SystemPrompt, { persona: '' })
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(UserQuestionService)
+    await ctx.plugin(AgentRegistry)
+    ctx.llm.registerAdapter(['deepseek-official'], new CatalogAdapter('DeepSeek', [
+      { provider: 'deepseek-official', id: 'deepseek-chat', name: 'DeepSeek Chat' },
+    ], REASONING))
+    const sessionId = 'session-hub-copy' as SessionId
+    const meta: SessionHeader = {
+      version: 0, id: sessionId, createdAt: 1, cwd: '/data/workspace', remoteAuthority: 'federation-hub',
+    }
+    const events = [{
+      type: 'request/header',
+      seq: 0,
+      time: 1,
+      data: { header: { config: { provider: 'deepseek-official', model: 'hub-picked', reasoningEffort: 'high' } } },
+    }] as unknown as SessionEvent[]
+    ctx.provide('sessionPersistence', {
+      list: () => Promise.resolve([meta]),
+      inspect: () => Promise.resolve({ meta, events }),
+    } as never)
+    ctx.provide('sessionSources', {
+      getSession: (id: SessionId, hint?: string) => Promise.resolve(
+        hint === 'federation-hub' && id === sessionId
+          ? { source: { id: 'federation-hub' }, session: { header: meta, events } }
+          : undefined,
+      ),
+    } as never)
+    const resume = vi.spyOn(ctx.agents, 'resume')
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      cwd: '/tmp',
+    })
+
+    const catalog = expectValue(await api.sessions.models(request({ sessionId })))
+
+    // The mounted model seat calls this on every view open; attaching an
+    // agent would freeze the pod's copy at attach time, so the directory is
+    // served from the caught-up log without a resume.
+    expect(catalog.current).toEqual({ provider: 'deepseek-official', model: 'hub-picked', reasoningEffort: 'high' })
+    expect(catalog.groups).toEqual([{
+      id: 'deepseek-official',
+      name: 'DeepSeek',
+      models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat', reasoning: REASONING }],
+    }])
+    expect(resume).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
   it('groups successful providers and leaves an unlisted current selection out of the catalog', async () => {
     const { ctx, sessionId } = await harness({
       provider: 'deepseek-official',

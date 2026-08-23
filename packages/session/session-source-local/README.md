@@ -35,6 +35,10 @@ Zero direct token overhead. Host-plane session persistence and queries do not co
 
 None. Local session source operations do not alter model request prefixes or prompt caching.
 
+## Live event subscriptions
+
+`subscribeEvents` serves both live and cold sessions. For a live session it replays events at or after `fromSeq` and forwards every later append. For a cold session (no live store entry — e.g. a persisted session no Agent holds) the subscription stays OPEN against activation: when the session is published (a resume republishes it), the `fromSeq` replay and forwarding begin, so a subscriber connected before activation still sees the whole session from its requested seq. Disposing a still-cold subscription cancels the wait without side effects. This is what lets a federation hub stream a session's events to pods from the moment the session first runs on the hub, not just from the moment an Agent happens to be live.
+
 ## Known Limitations and Deferred Work
 
 - **Single-node scope** — only covers sessions stored locally on the active process.
